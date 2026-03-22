@@ -14,8 +14,19 @@
       "database_id": "b7167993-8a1c-4dd6-8a86-acce43d80389"
     }
   ],
-  "routes": [
-    { "custom_domain": true, "pattern": "www.openpolsia.com" },
-    { "custom_domain": true, "pattern": "openpolsia.com" }
-  ]
+  "env": {
+    "prod": {
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "openpolsia-db",
+          "database_id": "b7167993-8a1c-4dd6-8a86-acce43d80389"
+        }
+      ],
+      "routes": [
+        { "custom_domain": true, "pattern": "www.openpolsia.com" },
+        { "custom_domain": true, "pattern": "openpolsia.com" }
+      ]
+    }
+  }
 }

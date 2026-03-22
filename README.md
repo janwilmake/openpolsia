@@ -1,7 +1,7 @@
 What makes it good:
 
 - really high conversion to wow moment
-- the identity of the email sending stays polsia, not your own domain/identity, making it easier for people to be comfortable doing this
+- the identity of the email sending stays Open Polsia, not your own domain/identity, making it easier for people to be comfortable doing this
 - very good branding / logo. it feels like a game
 
 First step - wow moment:

@@ -59,7 +59,7 @@ function dashboardHTML(name: string) {
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Dashboard — Polsia</title>
+  <title>Dashboard — Open Polsia</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -105,6 +105,8 @@ function dashboardHTML(name: string) {
       fetch("/api/auth/sign-out", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({}),
       }).then(function() { window.location.href = "/"; });
     }
   </script>

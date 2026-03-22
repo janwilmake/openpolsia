@@ -5,8 +5,9 @@
   "main": "index.js",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
-    "db:migrate": "wrangler d1 execute openpolsia-db --local --file=migrations/0001_auth.sql"
+    "deploy": "wrangler deploy --env prod",
+    "db:migrate": "wrangler d1 execute openpolsia-db --local --file=migrations/0001_auth.sql",
+    "db:migrate:remote": "wrangler d1 execute openpolsia-db --remote --file=migrations/0001_auth.sql"
   },
   "repository": {
     "type": "git",
