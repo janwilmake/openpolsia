@@ -32,11 +32,12 @@ What is an POC-level that is "good enough"?
 - ✅ Google Login -> get name + email. The same wow-factor with good paywall onboarding
 - ✅ frontend showing all data available for the company
 - ✅ **email integration** to receive emails from `{slug}@openpolsia.com` in the right inbox and also send from any email @openpolsia.com
-- LLM with tools to do all things needed.
+- ✅ **LLM operator** with systemprompt being a file hierarchy and a user message or task, if given, with tools: writeFile, readFile, justBash (see just-bash library: https://raw.githubusercontent.com/vercel-labs/just-bash/refs/heads/main/README.md), listTasks, createTask, editTask, sendMail, readMail, listMail, sendMessage, webSearch, webFetch (use parallel: https://docs.parallel.ai/api-reference/search-beta/search.md, https://docs.parallel.ai/api-reference/extract-beta/extract.md)
+- **subdomain integration**
+  - ✅ `*.openpolsia.com` should route to the worker
+  - ✅ if a subdomain is the incoming domain, look up the subdomain to get the durable object, then serve `website/*` documents with path if available, otherwise serve 404. for `/` we should serve `website/index.html`. if `website/index.html` is not available, redirect to `openpolsia.com`
+- ✅ **task executor queue**
 
 TODO
 
 - **stripe integration** to charge for companies and buying tasks
-- **subdomain integration** where static files are deployed from documents `website/*`
-- **task executor queue**
-- **LLM operator** with systemprompt being a file hierarchy and a user message or task, if given, with tools: writeFile, readFile, justBash (see just-bash library: https://raw.githubusercontent.com/vercel-labs/just-bash/refs/heads/main/README.md), listTasks, createTask, editTask, sendMail, readMail, listMail, sendMessage, webSearch, webFetch (use parallel: https://docs.parallel.ai/api-reference/search-beta/search.md, https://docs.parallel.ai/api-reference/extract-beta/extract.md)

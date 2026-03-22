@@ -1,4 +1,9 @@
 import { createAuth } from "./auth";
+import indexPageHTML from "../public/index.html";
+import newPageHTML from "../public/new.html";
+import aboutPageHTML from "../public/about.html";
+import termsPageHTML from "../public/terms.html";
+import privacyPageHTML from "../public/privacy.html";
 
 export { CompanyDO } from "./company-do";
 
@@ -40,6 +45,65 @@ function escapeHtml(str: string) {
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
+
+    // --- Subdomain routing: serve website/* documents from the company's DO ---
+    const hostname = url.hostname;
+    const subdomainMatch =
+      hostname.match(/^([a-z0-9_-]+)\.openpolsia\.com$/i) ||
+      hostname.match(/^([a-z0-9_-]+)\.localhost\.localhost$/i);
+    if (subdomainMatch && subdomainMatch[1] !== "www") {
+      const subdomain = subdomainMatch[1].toLowerCase();
+
+      // Look up company by slug
+      const company = await env.DB.prepare(
+        `SELECT * FROM "company" WHERE slug = ?`
+      )
+        .bind(subdomain)
+        .first<Company>();
+
+      if (!company) {
+        return new Response("Company not found", { status: 404 });
+      }
+
+      const doId = env.COMPANY_DO.idFromName(company.id);
+      const stub = env.COMPANY_DO.get(doId);
+
+      // Determine which document to serve
+      const docPath =
+        url.pathname === "/" ? "website/index.html" : "website" + url.pathname;
+
+      // Fetch the document from the DO (look up by title)
+      const res = await stub.fetch(
+        new Request(
+          "https://do/documents-by-title/" + encodeURIComponent(docPath)
+        )
+      );
+
+      if (res.ok) {
+        const doc = (await res.json()) as {
+          id: string;
+          title: string;
+          content: string;
+        };
+        // Guess content type from the path
+        const contentType = docPath.endsWith(".html")
+          ? "text/html;charset=utf-8"
+          : docPath.endsWith(".css")
+            ? "text/css;charset=utf-8"
+            : docPath.endsWith(".js")
+              ? "application/javascript;charset=utf-8"
+              : docPath.endsWith(".json")
+                ? "application/json;charset=utf-8"
+                : "text/plain;charset=utf-8";
+        return new Response(doc.content, {
+          headers: { "Content-Type": contentType }
+        });
+      }
+
+      // Document not found
+      return new Response("Document not found", { status: 404 });
+    }
+
     const auth = createAuth(env);
 
     // Handle all Better Auth routes (/api/auth/*)
@@ -100,10 +164,23 @@ export default {
           )
           .run();
 
-        // Kick the Durable Object so it initializes
+        // Initialize the Durable Object and create initial tasks
         const doId = env.COMPANY_DO.idFromName(id);
         const stub = env.COMPANY_DO.get(doId);
-        await stub.fetch(new Request("https://do/data"));
+        await stub.fetch(
+          new Request("https://do/init", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              method: body.method,
+              sourceInput: body.sourceInput || undefined,
+              companyName: name,
+              companySlug: finalSlug,
+              userEmail: session.user.email || undefined,
+              userName: session.user.name || undefined,
+            }),
+          })
+        );
 
         return Response.json({ id });
       }
@@ -118,6 +195,35 @@ export default {
       }
 
       return new Response("Method not allowed", { status: 405 });
+    }
+
+    // --- API: Delete a company ---
+    const deleteCompanyMatch = url.pathname.match(/^\/api\/companies\/([^/]+)$/);
+    if (deleteCompanyMatch && request.method === "DELETE") {
+      const session = await auth.api.getSession({ headers: request.headers });
+      if (!session)
+        return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+      const companyId = deleteCompanyMatch[1];
+      const company = await env.DB.prepare(
+        `SELECT * FROM "company" WHERE id = ? AND user_id = ?`
+      )
+        .bind(companyId, session.user.id)
+        .first<Company>();
+
+      if (!company)
+        return Response.json({ error: "Not found" }, { status: 404 });
+
+      // Destroy the Durable Object's data
+      const doId = env.COMPANY_DO.idFromName(companyId);
+      const stub = env.COMPANY_DO.get(doId);
+      await stub.fetch(new Request("https://do/destroy", { method: "DELETE" }));
+
+      await env.DB.prepare(`DELETE FROM "company" WHERE id = ? AND user_id = ?`)
+        .bind(companyId, session.user.id)
+        .run();
+
+      return Response.json({ ok: true });
     }
 
     // --- API: Proxy to Company DO ---
@@ -294,8 +400,22 @@ export default {
       );
     }
 
-    // Let Cloudflare assets handle everything else
-    return new Response(null, { status: 404 });
+    // --- Static pages ---
+    const staticPages: Record<string, string> = {
+      "/": indexPageHTML,
+      "/new": newPageHTML,
+      "/about": aboutPageHTML,
+      "/terms": termsPageHTML,
+      "/privacy": privacyPageHTML
+    };
+    const staticPage = staticPages[url.pathname];
+    if (staticPage) {
+      return new Response(staticPage, {
+        headers: { "Content-Type": "text/html;charset=utf-8" }
+      });
+    }
+
+    return new Response("Not found", { status: 404 });
   },
 
   async email(message: ForwardableEmailMessage, env: Env) {
@@ -408,7 +528,8 @@ function dashboardHTML(
       ? `<select id="company-select" onchange="switchCompany(this.value)">
         ${companies.map((c) => `<option value="${escapeHtml(c.id)}" ${selectedCompany && c.id === selectedCompany.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
       </select>
-      <a href="/new" class="topbar-add" title="New company">+</a>`
+      <a href="/new" class="topbar-add" title="New company">+</a>
+      <a onclick="deleteCompany()" class="topbar-delete" title="Delete company">&times;</a>`
       : "";
 
   const cIdSafe = selectedCompany ? escapeHtml(selectedCompany.id) : "";
@@ -421,16 +542,26 @@ function dashboardHTML(
           <div class="company-name">${escapeHtml(selectedCompany.name)}</div>
           <div class="data-grid">
             ${dataCard("Documents", companyData.documents.slice(0, 3), (d: any) => `<a href="/dashboard/${cIdSafe}/documents#${escapeHtml(d.id)}" class="doc-link"><strong>${escapeHtml(d.title)}</strong><br/><span class="doc-preview">${escapeHtml(d.content)}</span></a>`, `/dashboard/${cIdSafe}/documents`)}
-            ${dataCard("Tasks", companyData.tasks.slice(0, 3), (t: any) => `<a href="/dashboard/${cIdSafe}/tasks#${escapeHtml(t.id)}" class="doc-link"><span class="badge badge-${t.status}">${escapeHtml(t.status)}</span> ${escapeHtml(t.title)}</a>`, `/dashboard/${cIdSafe}/tasks`)}
+            <div class="card"><h3>Links</h3><div class="card-item"><a href="https://${escapeHtml(selectedCompany.slug)}.openpolsia.com" target="_blank" class="doc-link">${escapeHtml(selectedCompany.slug)}.openpolsia.com</a></div></div>
+            ${dataCard("Tasks", companyData.tasks.slice(0, 3), (t: any) => { const ds = t.recurrence ? "recurring" : t.status; return `<a href="/dashboard/${cIdSafe}/tasks#${escapeHtml(t.id)}" class="doc-link"><span class="badge badge-${ds}">${escapeHtml(ds)}</span> ${escapeHtml(t.title)}</a>`; }, `/dashboard/${cIdSafe}/tasks`)}
             ${dataCard(`Emails <small style="font-weight:normal;color:#888;font-size:12px">${escapeHtml(selectedCompany.slug)}@openpolsia.com</small>`, companyData.emails.slice(0, 3), (e: any) => `<a href="/dashboard/${cIdSafe}/emails#${escapeHtml(e.id)}" class="doc-link"><strong>${escapeHtml(e.subject)}</strong><br/><small>${escapeHtml(e.from_addr)} → ${escapeHtml(e.to_addr)}</small></a>`, `/dashboard/${cIdSafe}/emails`)}
             ${dataCard("Logs", companyData.logs.slice(0, 5), (l: any) => {
-              const badge = l.type === 'tool_call' ? 'badge-in_progress' : 'badge-completed';
-              const label = l.type === 'tool_call' ? 'call' : 'result';
-              let detail = '';
+              const badge =
+                l.type === "tool_call"
+                  ? "badge-in_progress"
+                  : "badge-completed";
+              const label = l.type === "tool_call" ? "call" : "result";
+              let detail = "";
               try {
                 const parsed = JSON.parse(l.content);
-                detail = parsed.tool + (parsed.input ? ': ' + JSON.stringify(parsed.input).slice(0, 80) : '');
-              } catch { detail = l.content; }
+                detail =
+                  parsed.tool +
+                  (parsed.input
+                    ? ": " + JSON.stringify(parsed.input).slice(0, 80)
+                    : "");
+              } catch {
+                detail = l.content;
+              }
               return `<span class="badge ${badge}">${escapeHtml(label)}</span> ${escapeHtml(detail)}`;
             })}
           </div>
@@ -501,6 +632,22 @@ function dashboardHTML(
       line-height: 1;
     }
     .topbar-add:hover { background: #555; }
+    .topbar-delete {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      background: #333;
+      color: #f55;
+      border: 1px solid #555;
+      border-radius: 4px;
+      font-size: 18px;
+      text-decoration: none;
+      line-height: 1;
+      cursor: pointer;
+    }
+    .topbar-delete:hover { background: #500; color: #fff; }
     .topbar-right {
       display: flex;
       align-items: center;
@@ -627,6 +774,9 @@ function dashboardHTML(
       border: 1px solid #e0e0e0;
       border-radius: 6px;
       padding: 20px;
+      min-width: 0;
+      overflow: hidden;
+      word-break: break-word;
     }
     .card h3 {
       font-size: 13px;
@@ -693,6 +843,32 @@ function dashboardHTML(
       color: #111;
       text-decoration: underline;
     }
+
+    @media (prefers-color-scheme: dark) {
+      body { background: #121212; color: #e0e0e0; }
+      .topbar { background: #0d0d0d; }
+      .topbar select { background: #222; border-color: #444; }
+      .topbar-add { background: #222; border-color: #444; }
+      .topbar-add:hover { background: #444; }
+      .topbar-delete { background: #222; border-color: #444; }
+      .topbar-delete:hover { background: #500; }
+      .company-name { color: #e0e0e0; }
+      .card { background: #1e1e1e; border-color: #333; }
+      .card-item { border-bottom-color: #2a2a2a; }
+      .doc-link { color: #e0e0e0; }
+      .doc-link:hover { color: #bbb; }
+      .doc-preview { color: #999; }
+      .chat-panel { background: #1e1e1e; border-color: #333; }
+      .chat-header { color: #888; border-bottom-color: #333; }
+      .chat-msg .chat-text { color: #ccc; }
+      .chat-input-area { border-top-color: #333; }
+      .chat-input-area input { background: #1e1e1e; color: #e0e0e0; }
+      .chat-send { background: #333; }
+      .chat-send:hover { background: #555; }
+      .empty { color: #999; }
+      .empty a { color: #e0e0e0; }
+      .show-all { color: #999; }
+    }
   </style>
 </head>
 <body>
@@ -717,6 +893,16 @@ function dashboardHTML(
     function switchCompany(id) {
       window.location.href = '/dashboard/' + id;
     }
+    function deleteCompany() {
+      if (!COMPANY_ID) return;
+      if (!confirm('Are you sure you want to delete this company? This cannot be undone.')) return;
+      fetch('/api/companies/' + COMPANY_ID, {
+        method: 'DELETE',
+        credentials: 'include',
+      }).then(function(r) {
+        if (r.ok) window.location.href = '/dashboard';
+      });
+    }
     function signOut() {
       fetch('/api/auth/sign-out', {
         method: 'POST',
@@ -726,13 +912,62 @@ function dashboardHTML(
       }).then(function() { window.location.href = '/'; });
     }
 
+    var streamingPollTimer = null;
+
     function loadChat() {
       if (!COMPANY_ID) return;
       fetch('/api/company/' + COMPANY_ID + '/chat', { credentials: 'include' })
         .then(function(r) { return r.json(); })
         .then(function(data) {
           renderChat(data.messages);
+          checkStreaming();
         });
+    }
+
+    function checkStreaming() {
+      if (!COMPANY_ID) return;
+      fetch('/api/company/' + COMPANY_ID + '/chat/streaming', { credentials: 'include' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.message && data.message.content !== undefined) {
+            showStreamingBubble(data.message.content);
+            // Poll for updates
+            if (streamingPollTimer) clearTimeout(streamingPollTimer);
+            streamingPollTimer = setTimeout(checkStreaming, 500);
+          } else {
+            // Streaming done — reload chat to get final message
+            removeStreamingBubble();
+            if (streamingPollTimer) {
+              clearTimeout(streamingPollTimer);
+              streamingPollTimer = null;
+              // Reload to pick up the finalized message
+              fetch('/api/company/' + COMPANY_ID + '/chat', { credentials: 'include' })
+                .then(function(r) { return r.json(); })
+                .then(function(d) { renderChat(d.messages); });
+            }
+          }
+        });
+    }
+
+    function showStreamingBubble(text) {
+      var el = document.getElementById('chat-messages');
+      if (!el) return;
+      var bubble = document.getElementById('streaming-bubble');
+      if (!bubble) {
+        bubble = document.createElement('div');
+        bubble.id = 'streaming-bubble';
+        bubble.className = 'chat-msg chat-agent';
+        el.appendChild(bubble);
+      }
+      var rendered = text ? renderMarkdown(text) : '';
+      bubble.innerHTML = '<div class="chat-role">assistant</div>'
+        + '<div class="chat-text rendered-md chat-streaming">' + rendered + '</div>';
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function removeStreamingBubble() {
+      var bubble = document.getElementById('streaming-bubble');
+      if (bubble) bubble.remove();
     }
 
     function renderChat(messages) {
@@ -761,6 +996,10 @@ function dashboardHTML(
       if (!text || !COMPANY_ID || isSending) return;
       input.value = '';
       isSending = true;
+
+      // Stop any active streaming poll and remove its bubble
+      if (streamingPollTimer) { clearTimeout(streamingPollTimer); streamingPollTimer = null; }
+      removeStreamingBubble();
 
       var el = document.getElementById('chat-messages');
 
@@ -822,7 +1061,28 @@ function dashboardHTML(
       html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
       html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
       html = html.replace(/(<li>.*<\\/li>)/gs, '<ul>$1</ul>');
-      html = html.replace(/^(?!<[hupbl])(\\S.+)$/gm, '<p>$1</p>');
+      // Tables
+      html = html.replace(/((?:^\\|.+\\|\\s*$\\n?)+)/gm, function(table) {
+        var rows = table.trim().split('\\n').filter(function(r) { return r.trim(); });
+        if (rows.length < 2) return table;
+        var isSep = function(r) { return /^\\|[\\s:-]+\\|$/.test(r.replace(/[\\s:-]/g, function(c) { return c === '|' ? '|' : ''; }).replace(/[^|]/g, '')); };
+        // Check if row 2 is the separator
+        var sepIdx = -1;
+        for (var i = 0; i < rows.length; i++) {
+          if (/^\\|[\\s:|-]+\\|$/.test(rows[i]) && /---/.test(rows[i])) { sepIdx = i; break; }
+        }
+        if (sepIdx < 1) return table;
+        var parseRow = function(r) {
+          return r.replace(/^\\|/, '').replace(/\\|$/, '').split('|').map(function(c) { return c.trim(); });
+        };
+        var thead = '<thead><tr>' + parseRow(rows[sepIdx - 1]).map(function(c) { return '<th>' + c + '</th>'; }).join('') + '</tr></thead>';
+        var bodyRows = rows.slice(sepIdx + 1);
+        var tbody = bodyRows.length > 0 ? '<tbody>' + bodyRows.map(function(r) {
+          return '<tr>' + parseRow(r).map(function(c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
+        }).join('') + '</tbody>' : '';
+        return '<table>' + thead + tbody + '</table>';
+      });
+      html = html.replace(/^(?!<[hupblt])(\\S.+)$/gm, '<p>$1</p>');
       return html;
     }
 
@@ -1003,6 +1263,24 @@ function documentsPageHTML(company: Company) {
       color: #666;
       margin-bottom: 12px;
     }
+    .rendered-md table {
+      border-collapse: collapse;
+      width: 100%;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+    .rendered-md th, .rendered-md td {
+      border: 1px solid #ddd;
+      padding: 8px 12px;
+      text-align: left;
+    }
+    .rendered-md th {
+      background: #f5f5f5;
+      font-weight: 600;
+    }
+    .rendered-md tr:nth-child(even) {
+      background: #fafafa;
+    }
     .edit-area {
       width: 100%;
       height: 100%;
@@ -1024,6 +1302,34 @@ function documentsPageHTML(company: Company) {
       height: 100%;
       color: #999;
       font-size: 16px;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body { background: #121212; color: #e0e0e0; }
+      .topbar { background: #0d0d0d; }
+      .sidebar { background: #1e1e1e; border-right-color: #333; }
+      .sidebar-header { color: #888; border-bottom-color: #333; }
+      .doc-item { border-bottom-color: #2a2a2a; color: #e0e0e0; }
+      .doc-item:hover { background: #2a2a2a; }
+      .doc-item.active { background: #333; }
+      .doc-item .doc-date { color: #777; }
+      .main-toolbar { background: #1e1e1e; border-bottom-color: #333; }
+      .main-toolbar h2 { color: #e0e0e0; }
+      .btn { background: #1e1e1e; color: #e0e0e0; border-color: #555; }
+      .btn:hover { background: #2a2a2a; }
+      .btn-primary { background: #333; color: #fff; border-color: #333; }
+      .btn-primary:hover { background: #555; }
+      .btn-danger { color: #e74c3c; border-color: #5a2020; }
+      .btn-danger:hover { background: #2a1515; }
+      .rendered-md { color: #ccc; }
+      .rendered-md code { background: #2a2a2a; color: #e0e0e0; }
+      .rendered-md pre { background: #2a2a2a; }
+      .rendered-md blockquote { border-left-color: #555; color: #999; }
+      .rendered-md th { background: #2a2a2a; color: #e0e0e0; }
+      .rendered-md th, .rendered-md td { border-color: #444; }
+      .rendered-md tr:nth-child(even) { background: #222; }
+      .edit-area { background: #1e1e1e; color: #e0e0e0; border-color: #555; }
+      .edit-area:focus { border-color: #e0e0e0; }
     }
   </style>
 </head>
@@ -1208,8 +1514,27 @@ function documentsPageHTML(company: Company) {
       // Unordered lists
       html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
       html = html.replace(/(<li>.*<\\/li>)/gs, '<ul>$1</ul>');
+      // Tables
+      html = html.replace(/((?:^\\|.+\\|\\s*$\\n?)+)/gm, function(table) {
+        var rows = table.trim().split('\\n').filter(function(r) { return r.trim(); });
+        if (rows.length < 2) return table;
+        var sepIdx = -1;
+        for (var i = 0; i < rows.length; i++) {
+          if (/^\\|[\\s:|-]+\\|$/.test(rows[i]) && /---/.test(rows[i])) { sepIdx = i; break; }
+        }
+        if (sepIdx < 1) return table;
+        var parseRow = function(r) {
+          return r.replace(/^\\|/, '').replace(/\\|$/, '').split('|').map(function(c) { return c.trim(); });
+        };
+        var thead = '<thead><tr>' + parseRow(rows[sepIdx - 1]).map(function(c) { return '<th>' + c + '</th>'; }).join('') + '</tr></thead>';
+        var bodyRows = rows.slice(sepIdx + 1);
+        var tbody = bodyRows.length > 0 ? '<tbody>' + bodyRows.map(function(r) {
+          return '<tr>' + parseRow(r).map(function(c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
+        }).join('') + '</tbody>' : '';
+        return '<table>' + thead + tbody + '</table>';
+      });
       // Paragraphs (lines not already wrapped)
-      html = html.replace(/^(?!<[hupbl])(\\S.+)$/gm, '<p>$1</p>');
+      html = html.replace(/^(?!<[hupblt])(\\S.+)$/gm, '<p>$1</p>');
       return html;
     }
 
@@ -1375,6 +1700,17 @@ function tasksPageHTML(company: Company) {
       gap: 16px;
       align-items: center;
     }
+    .retry-btn {
+      padding: 4px 14px;
+      background: #111;
+      color: #fff;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .retry-btn:hover { background: #333; }
     .main-content {
       flex: 1;
       overflow-y: auto;
@@ -1397,6 +1733,94 @@ function tasksPageHTML(company: Company) {
       padding: 16px;
       color: #999;
       font-size: 14px;
+    }
+    .task-messages {
+      margin-top: 20px;
+      border-top: 1px solid #e0e0e0;
+      padding-top: 16px;
+    }
+    .task-messages h4 {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: #888;
+      margin-bottom: 12px;
+    }
+    .task-msg {
+      padding: 8px 12px;
+      margin-bottom: 6px;
+      border-radius: 4px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .task-msg-call {
+      background: #f0f4ff;
+      border-left: 3px solid #4a90d9;
+    }
+    .task-msg-result {
+      background: #f0faf0;
+      border-left: 3px solid #5cb85c;
+    }
+    .task-msg-text {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+    }
+    .task-msg .msg-label {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 2px;
+    }
+    .task-msg-call .msg-label { color: #4a90d9; }
+    .task-msg-result .msg-label { color: #5cb85c; }
+    .task-msg-text .msg-label { color: #888; }
+    .task-msg .msg-body {
+      word-break: break-word;
+      white-space: pre-wrap;
+    }
+    .task-msg .msg-tool {
+      font-weight: 600;
+    }
+    .task-msg .msg-detail {
+      color: #555;
+      font-family: 'SF Mono', Monaco, Consolas, monospace;
+      font-size: 12px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    .task-messages-loading {
+      color: #999;
+      font-size: 13px;
+      font-style: italic;
+    }
+
+    @media (prefers-color-scheme: dark) {
+      body { background: #121212; color: #e0e0e0; }
+      .topbar { background: #0d0d0d; }
+      .sidebar { background: #1e1e1e; border-right-color: #333; }
+      .tabs { border-bottom-color: #333; }
+      .tab { background: #1e1e1e; color: #999; border-color: #444; }
+      .tab:hover { background: #2a2a2a; }
+      .tab.active { background: #e0e0e0; color: #111; border-color: #e0e0e0; }
+      .tab .count { color: #777; }
+      .tab.active .count { color: #555; }
+      .task-item { border-bottom-color: #2a2a2a; color: #e0e0e0; }
+      .task-item:hover { background: #2a2a2a; }
+      .task-item.active { background: #333; }
+      .task-item .task-meta { color: #888; }
+      .task-header { background: #1e1e1e; border-bottom-color: #333; }
+      .task-header h2 { color: #e0e0e0; }
+      .task-header .task-header-meta { color: #999; }
+      .retry-btn { background: #333; }
+      .retry-btn:hover { background: #555; }
+      .task-description { color: #ccc; }
+      .task-messages { border-top-color: #333; }
+      .task-msg-call { background: #1a2233; border-left-color: #4a90d9; }
+      .task-msg-result { background: #1a2a1a; border-left-color: #5cb85c; }
+      .task-msg-text { background: #1e1e1e; border-color: #333; }
+      .task-msg .msg-detail { color: #aaa; }
+      .empty-list { color: #777; }
     }
   </style>
 </head>
@@ -1438,6 +1862,10 @@ function tasksPageHTML(company: Company) {
       return '/api/company/' + COMPANY_ID + path;
     }
 
+    function displayStatus(t) {
+      return t.recurrence ? 'recurring' : t.status;
+    }
+
     function loadTasks(initial) {
       fetch(apiUrl('/tasks'), { credentials: 'include' })
         .then(function(r) { return r.json(); })
@@ -1466,7 +1894,7 @@ function tasksPageHTML(company: Company) {
 
     function updateCounts() {
       var cats = { all: allTasks.length, todo: 0, recurring: 0, in_progress: 0, completed: 0, rejected: 0, failed: 0 };
-      allTasks.forEach(function(t) { if (cats[t.status] !== undefined) cats[t.status]++; });
+      allTasks.forEach(function(t) { var ds = displayStatus(t); if (cats[ds] !== undefined) cats[ds]++; });
       Object.keys(cats).forEach(function(k) {
         var el = document.getElementById('count-' + k);
         if (el) el.textContent = '(' + cats[k] + ')';
@@ -1490,7 +1918,7 @@ function tasksPageHTML(company: Company) {
       if (currentFilter === 'all') {
         filteredTasks = allTasks;
       } else {
-        filteredTasks = allTasks.filter(function(t) { return t.status === currentFilter; });
+        filteredTasks = allTasks.filter(function(t) { return displayStatus(t) === currentFilter; });
       }
       renderList();
     }
@@ -1503,10 +1931,11 @@ function tasksPageHTML(company: Company) {
       }
       list.innerHTML = filteredTasks.map(function(t) {
         var active = selectedTask && selectedTask.id === t.id ? ' active' : '';
+        var ds = displayStatus(t);
         return '<div class="task-item' + active + '" onclick="selectTaskById(\\'' + t.id + '\\')">'
           + '<div class="task-title">' + esc(t.title) + '</div>'
           + '<div class="task-meta">'
-          + '<span class="badge badge-' + t.status + '">' + esc(t.status) + '</span>'
+          + '<span class="badge badge-' + ds + '">' + esc(ds) + '</span>'
           + (t.assigned_to ? '<span>' + esc(t.assigned_to) + '</span>' : '')
           + '</div>'
           + '</div>';
@@ -1537,15 +1966,73 @@ function tasksPageHTML(company: Company) {
       header.style.display = 'block';
       document.getElementById('task-title').textContent = selectedTask.title;
       document.getElementById('task-meta').innerHTML =
-        '<span class="badge badge-' + selectedTask.status + '">' + esc(selectedTask.status) + '</span>'
+        '<span class="badge badge-' + displayStatus(selectedTask) + '">' + esc(displayStatus(selectedTask)) + '</span>'
         + (selectedTask.assigned_to ? '<span>Assigned to: <strong>' + esc(selectedTask.assigned_to) + '</strong></span>' : '')
-        + '<span>' + new Date(selectedTask.created_at).toLocaleString() + '</span>';
+        + (selectedTask.recurrence ? '<span>Recurs: <strong>' + esc(selectedTask.recurrence) + '</strong></span>' : '')
+        + '<span>' + new Date(selectedTask.created_at).toLocaleString() + '</span>'
+        + (selectedTask.status === 'failed' ? '<button class="retry-btn" onclick="retryTask(\\'' + selectedTask.id + '\\')">Retry</button>' : '');
 
-      if (selectedTask.description) {
-        content.innerHTML = '<div class="task-description">' + esc(selectedTask.description) + '</div>';
-      } else {
-        content.innerHTML = '<div class="empty-state" style="color:#bbb">No description</div>';
-      }
+      var desc = selectedTask.description
+        ? '<div class="task-description">' + esc(selectedTask.description) + '</div>'
+        : '';
+
+      content.innerHTML = desc
+        + '<div class="task-messages" id="task-messages">'
+        + '<h4>Activity</h4>'
+        + '<div class="task-messages-loading">Loading...</div>'
+        + '</div>';
+
+      loadTaskMessages(selectedTask.id);
+    }
+
+    function loadTaskMessages(taskId) {
+      fetch(apiUrl('/tasks/' + taskId + '/messages'), { credentials: 'include' })
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+          var container = document.getElementById('task-messages');
+          if (!container || !selectedTask || selectedTask.id !== taskId) return;
+
+          if (!data.messages || data.messages.length === 0) {
+            container.innerHTML = '<h4>Activity</h4><div style="color:#bbb;font-size:13px">No activity yet</div>';
+            return;
+          }
+
+          var html = '<h4>Activity (' + data.messages.length + ')</h4>';
+          data.messages.forEach(function(msg) {
+            if (msg.type === 'tool_call') {
+              var parsed = {};
+              try { parsed = JSON.parse(msg.content); } catch(e) {}
+              html += '<div class="task-msg task-msg-call">'
+                + '<div class="msg-label">Tool Call</div>'
+                + '<div class="msg-tool">' + esc(parsed.tool || 'unknown') + '</div>'
+                + '<div class="msg-detail">' + esc(JSON.stringify(parsed.input || {}, null, 2)) + '</div>'
+                + '</div>';
+            } else if (msg.type === 'tool_result') {
+              var parsed = {};
+              try { parsed = JSON.parse(msg.content); } catch(e) {}
+              html += '<div class="task-msg task-msg-result">'
+                + '<div class="msg-label">Result — ' + esc(parsed.tool || '') + '</div>'
+                + '<div class="msg-detail">' + esc(JSON.stringify(parsed.result || {}, null, 2)) + '</div>'
+                + '</div>';
+            } else {
+              html += '<div class="task-msg task-msg-text">'
+                + '<div class="msg-label">Assistant</div>'
+                + '<div class="msg-body">' + esc(msg.content) + '</div>'
+                + '</div>';
+            }
+          });
+
+          container.innerHTML = html;
+        });
+    }
+
+    function retryTask(taskId) {
+      fetch(apiUrl('/tasks/' + taskId + '/retry'), {
+        method: 'POST',
+        credentials: 'include',
+      }).then(function(r) {
+        if (r.ok) loadTasks(false);
+      });
     }
 
     function esc(s) {
@@ -1693,6 +2180,10 @@ function emailsPageHTML(company: Company) {
     .rendered-md pre { background: #f0f0f0; padding: 16px; border-radius: 6px; overflow-x: auto; margin-bottom: 12px; }
     .rendered-md pre code { background: none; padding: 0; }
     .rendered-md blockquote { border-left: 3px solid #ddd; padding-left: 16px; color: #666; margin-bottom: 12px; }
+    .rendered-md table { border-collapse: collapse; width: 100%; margin-bottom: 12px; font-size: 14px; }
+    .rendered-md th, .rendered-md td { border: 1px solid #ddd; padding: 8px 12px; text-align: left; }
+    .rendered-md th { background: #f5f5f5; font-weight: 600; }
+    .rendered-md tr:nth-child(even) { background: #fafafa; }
     .empty-state { display: flex; align-items: center; justify-content: center; height: 100%; color: #999; font-size: 16px; }
     .compose-form {
       padding: 24px;
@@ -1756,6 +2247,48 @@ function emailsPageHTML(company: Company) {
     }
     .send-status.success { background: #d4edda; color: #155724; }
     .send-status.error { background: #f8d7da; color: #721c24; }
+
+    @media (prefers-color-scheme: dark) {
+      body { background: #121212; color: #e0e0e0; }
+      .topbar { background: #0d0d0d; }
+      .sidebar { background: #1e1e1e; border-right-color: #333; }
+      .sidebar-top { border-bottom-color: #333; }
+      .sidebar-top .inbox-label { color: #888; }
+      .compose-btn { background: #333; }
+      .compose-btn:hover { background: #555; }
+      .tabs { }
+      .tab { background: #1e1e1e; color: #999; border-color: #444; }
+      .tab:hover { background: #2a2a2a; }
+      .tab.active { background: #e0e0e0; color: #111; border-color: #e0e0e0; }
+      .tab .count { color: #777; }
+      .tab.active .count { color: #555; }
+      .email-item { border-bottom-color: #2a2a2a; color: #e0e0e0; }
+      .email-item:hover { background: #2a2a2a; }
+      .email-item.active { background: #333; }
+      .email-item .email-meta { color: #888; }
+      .email-item .email-date { color: #777; }
+      .email-header { background: #1e1e1e; border-bottom-color: #333; }
+      .email-header h2 { color: #e0e0e0; }
+      .email-header .email-header-meta { color: #999; }
+      .email-header .email-header-meta strong { color: #ccc; }
+      .rendered-md { color: #ccc; }
+      .rendered-md code { background: #2a2a2a; color: #e0e0e0; }
+      .rendered-md pre { background: #2a2a2a; }
+      .rendered-md blockquote { border-left-color: #555; color: #999; }
+      .rendered-md th { background: #2a2a2a; color: #e0e0e0; }
+      .rendered-md th, .rendered-md td { border-color: #444; }
+      .rendered-md tr:nth-child(even) { background: #222; }
+      .compose-form label { color: #999; }
+      .compose-form input, .compose-form textarea { background: #2a2a2a; color: #e0e0e0; border-color: #555; }
+      .compose-form input:focus, .compose-form textarea:focus { border-color: #e0e0e0; }
+      .compose-form .from-display { background: #2a2a2a; color: #999; }
+      .compose-actions button { background: #1e1e1e; color: #999; border-color: #555; }
+      .compose-actions button:not(.btn-send):hover { background: #2a2a2a; }
+      .compose-actions .btn-send { background: #333; color: #fff; border-color: #333; }
+      .compose-actions .btn-send:hover { background: #555; }
+      .send-status.success { background: #1a2a1a; color: #5cb85c; }
+      .send-status.error { background: #2a1515; color: #e74c3c; }
+    }
   </style>
 </head>
 <body>
@@ -2017,7 +2550,28 @@ function emailsPageHTML(company: Company) {
       html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
       html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
       html = html.replace(/(<li>.*<\\/li>)/gs, '<ul>$1</ul>');
-      html = html.replace(/^(?!<[hupbl])(\\S.+)$/gm, '<p>$1</p>');
+      // Tables
+      html = html.replace(/((?:^\\|.+\\|\\s*$\\n?)+)/gm, function(table) {
+        var rows = table.trim().split('\\n').filter(function(r) { return r.trim(); });
+        if (rows.length < 2) return table;
+        var isSep = function(r) { return /^\\|[\\s:-]+\\|$/.test(r.replace(/[\\s:-]/g, function(c) { return c === '|' ? '|' : ''; }).replace(/[^|]/g, '')); };
+        // Check if row 2 is the separator
+        var sepIdx = -1;
+        for (var i = 0; i < rows.length; i++) {
+          if (/^\\|[\\s:|-]+\\|$/.test(rows[i]) && /---/.test(rows[i])) { sepIdx = i; break; }
+        }
+        if (sepIdx < 1) return table;
+        var parseRow = function(r) {
+          return r.replace(/^\\|/, '').replace(/\\|$/, '').split('|').map(function(c) { return c.trim(); });
+        };
+        var thead = '<thead><tr>' + parseRow(rows[sepIdx - 1]).map(function(c) { return '<th>' + c + '</th>'; }).join('') + '</tr></thead>';
+        var bodyRows = rows.slice(sepIdx + 1);
+        var tbody = bodyRows.length > 0 ? '<tbody>' + bodyRows.map(function(r) {
+          return '<tr>' + parseRow(r).map(function(c) { return '<td>' + c + '</td>'; }).join('') + '</tr>';
+        }).join('') + '</tbody>' : '';
+        return '<table>' + thead + tbody + '</table>';
+      });
+      html = html.replace(/^(?!<[hupblt])(\\S.+)$/gm, '<p>$1</p>');
       return html;
     }
 

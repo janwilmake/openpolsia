@@ -1,4 +1,4 @@
-import { streamText, tool, stepCountIs } from "ai";
+import { streamText, generateText, tool, stepCountIs } from "ai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { Bash } from "just-bash";
 import { z } from "zod/v4";
@@ -22,7 +22,7 @@ function buildSystemPrompt(ctx: OperatorContext): string {
   ];
   const tasks = [
     ...sql.exec(
-      "SELECT id, title, status, assigned_to, description FROM task ORDER BY created_at DESC"
+      "SELECT id, title, status, assigned_to, description, recurrence, next_run_at FROM task ORDER BY created_at DESC"
     )
   ];
   const emails = [
@@ -37,7 +37,7 @@ function buildSystemPrompt(ctx: OperatorContext): string {
     tasks
       .map(
         (t: any) =>
-          `  [${t.status}] ${t.title} (${t.id}) — ${t.assigned_to || "unassigned"}`
+          `  [${t.status}] ${t.title} (${t.id}) — ${t.assigned_to || "unassigned"}${t.recurrence ? ` (${t.recurrence})` : ""}`
       )
       .join("\n") || "  (empty)";
   const emailList =
@@ -181,7 +181,7 @@ function createTools(ctx: OperatorContext) {
     }),
 
     createTask: tool({
-      description: "Create a new task",
+      description: "Create a new task. Set recurrence for recurring tasks.",
       inputSchema: z.object({
         title: z.string().describe("Task title"),
         description: z.string().default("").describe("Task description"),
@@ -189,43 +189,54 @@ function createTools(ctx: OperatorContext) {
         assigned_to: z
           .string()
           .optional()
-          .describe("Who the task is assigned to")
+          .describe("Who the task is assigned to"),
+        recurrence: z
+          .enum(["hourly", "daily", "weekly"])
+          .optional()
+          .describe("Recurrence interval. Omit for one-off tasks.")
       }),
-      execute: async ({ title, description, status, assigned_to }) => {
+      execute: async ({ title, description, status, assigned_to, recurrence }) => {
         const id = crypto.randomUUID();
         const now = new Date().toISOString();
         sql.exec(
-          "INSERT INTO task (id, title, description, status, assigned_to, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO task (id, title, description, status, assigned_to, recurrence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
           id,
           title,
           description,
           status,
           assigned_to || null,
+          recurrence || null,
           now
         );
-        return { id, title, status, created: true };
+        return { id, title, status, recurrence: recurrence || null, created: true };
       }
     }),
 
     editTask: tool({
       description:
-        "Update an existing task's status, title, description, or assignment",
+        "Update an existing task's status, title, description, assignment, or recurrence",
       inputSchema: z.object({
         id: z.string().describe("Task ID to update"),
         title: z.string().optional().describe("New title"),
         description: z.string().optional().describe("New description"),
         status: z.string().optional().describe("New status"),
-        assigned_to: z.string().optional().describe("New assignee")
+        assigned_to: z.string().optional().describe("New assignee"),
+        recurrence: z
+          .enum(["hourly", "daily", "weekly"])
+          .nullable()
+          .optional()
+          .describe("Set recurrence interval, or null to make one-off")
       }),
-      execute: async ({ id, title, description, status, assigned_to }) => {
-        const existing = sql.exec("SELECT * FROM task WHERE id = ?", id).one();
+      execute: async ({ id, title, description, status, assigned_to, recurrence }) => {
+        const existing = sql.exec("SELECT * FROM task WHERE id = ?", id).one() as any;
         if (!existing) return { error: "Task not found" };
         sql.exec(
-          "UPDATE task SET title = ?, description = ?, status = ?, assigned_to = ? WHERE id = ?",
+          "UPDATE task SET title = ?, description = ?, status = ?, assigned_to = ?, recurrence = ? WHERE id = ?",
           title ?? existing.title,
           description ?? existing.description,
           status ?? existing.status,
           assigned_to ?? existing.assigned_to,
+          recurrence !== undefined ? recurrence : existing.recurrence,
           id
         );
         return { id, updated: true };
@@ -401,7 +412,7 @@ function createTools(ctx: OperatorContext) {
 export function runOperator(
   ctx: OperatorContext,
   messages: Array<{ role: "user" | "assistant"; content: string }>,
-  onFinish?: (text: string) => void
+  streamMsgId: string,
 ): Response {
   const anthropic = createAnthropic({ apiKey: ctx.anthropicApiKey });
   const systemPrompt = buildSystemPrompt(ctx);
@@ -442,11 +453,144 @@ export function runOperator(
           }
         }
       }
-      if (onFinish && event.text) {
-        onFinish(event.text);
-      }
+      // Finalize the streaming message
+      sql.exec(
+        "UPDATE chat_message SET type = 'message', content = ? WHERE id = ?",
+        event.text || "",
+        streamMsgId
+      );
     }
   });
 
-  return result.toTextStreamResponse();
+  // Create a custom stream that saves partial text to DB as it arrives
+  const encoder = new TextEncoder();
+  let accumulated = "";
+  let lastSaveLen = 0;
+  let clientConnected = true;
+
+  const stream = new ReadableStream({
+    async start(controller) {
+      try {
+        for await (const chunk of result.textStream) {
+          accumulated += chunk;
+
+          // Write to client if still connected
+          if (clientConnected) {
+            try {
+              controller.enqueue(encoder.encode(chunk));
+            } catch {
+              clientConnected = false;
+            }
+          }
+
+          // Save to DB every 200 chars
+          if (accumulated.length - lastSaveLen >= 200) {
+            sql.exec(
+              "UPDATE chat_message SET content = ? WHERE id = ?",
+              accumulated,
+              streamMsgId
+            );
+            lastSaveLen = accumulated.length;
+          }
+        }
+
+        // Final partial save (onFinish handles the real finalization)
+        if (accumulated.length > lastSaveLen) {
+          sql.exec(
+            "UPDATE chat_message SET content = ? WHERE id = ?",
+            accumulated,
+            streamMsgId
+          );
+        }
+      } catch (e) {
+        // Save what we have on error
+        if (accumulated.length > lastSaveLen) {
+          sql.exec(
+            "UPDATE chat_message SET content = ? WHERE id = ?",
+            accumulated,
+            streamMsgId
+          );
+        }
+      } finally {
+        if (clientConnected) {
+          try {
+            controller.close();
+          } catch {}
+        }
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: { "Content-Type": "text/plain; charset=utf-8" },
+  });
+}
+
+export async function executeOperatorTask(
+  ctx: OperatorContext,
+  taskId: string,
+  taskTitle: string,
+  taskDescription: string
+): Promise<{ success: boolean; text: string }> {
+  const anthropic = createAnthropic({ apiKey: ctx.anthropicApiKey });
+  const systemPrompt = buildSystemPrompt(ctx);
+  const tools = createTools(ctx);
+  const sql = ctx.sql;
+
+  const result = await generateText({
+    model: anthropic("claude-sonnet-4-6"),
+    system: systemPrompt,
+    messages: [
+      {
+        role: "user",
+        content: `Execute this task:\n\nTitle: ${taskTitle}\nDescription: ${taskDescription}\n\nUse the available tools to complete this task. Be thorough and action-oriented.`,
+      },
+    ],
+    tools,
+    stopWhen: stepCountIs(10),
+  });
+
+  // Save tool calls and results from all steps, tagged with task_id
+  for (const step of result.steps) {
+    if (step.toolCalls) {
+      for (const tc of step.toolCalls) {
+        sql.exec(
+          "INSERT INTO chat_message (id, role, type, content, task_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          crypto.randomUUID(),
+          "assistant",
+          "tool_call",
+          JSON.stringify({ tool: tc.toolName, input: tc.input }),
+          taskId,
+          new Date().toISOString()
+        );
+      }
+    }
+    if (step.toolResults) {
+      for (const tr of step.toolResults as any[]) {
+        sql.exec(
+          "INSERT INTO chat_message (id, role, type, content, task_id, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          crypto.randomUUID(),
+          "assistant",
+          "tool_result",
+          JSON.stringify({ tool: tr.toolName, result: tr.result }),
+          taskId,
+          new Date().toISOString()
+        );
+      }
+    }
+  }
+
+  // Save the final assistant text as a chat message
+  if (result.text.trim()) {
+    sql.exec(
+      "INSERT INTO chat_message (id, role, content, task_id, created_at) VALUES (?, ?, ?, ?, ?)",
+      crypto.randomUUID(),
+      "assistant",
+      result.text,
+      taskId,
+      new Date().toISOString()
+    );
+  }
+
+  return { success: true, text: result.text };
 }

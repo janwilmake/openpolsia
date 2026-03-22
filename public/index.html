@@ -147,6 +147,21 @@
       text-decoration: underline;
       text-underline-offset: 2px;
     }
+
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a1a; color: #e0e0e0; }
+      .terminal { background: #0d0d0d; }
+      .header h1 { color: #e0e0e0; }
+      .header .sign-in { color: #e0e0e0; }
+      .hero h2 { color: #e0e0e0; }
+      .hero p { color: #ccc; }
+      .cta { background: linear-gradient(to bottom, #555, #222); border-color: #444; }
+      .cta:hover { background: linear-gradient(to bottom, #666, #333); }
+      .sub-cta { color: #999; }
+      .divider { border-top-color: #333; }
+      .footer { color: #999; }
+      .footer a { color: #e0e0e0; }
+    }
   </style>
 </head>
 <body>

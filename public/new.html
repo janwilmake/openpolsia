@@ -105,6 +105,21 @@
       opacity: 0.5;
       cursor: not-allowed;
     }
+
+    @media (prefers-color-scheme: dark) {
+      body { background: #1a1a1a; color: #e0e0e0; }
+      .header h1 { color: #e0e0e0; }
+      .header a { color: #e0e0e0; }
+      h2 { color: #e0e0e0; }
+      .option { border-color: #333; background: #1e1e1e; }
+      .option:hover, .option.active { border-color: #e0e0e0; }
+      .option h3 { color: #e0e0e0; }
+      .option p { color: #999; }
+      input[type="text"], textarea { background: #2a2a2a; color: #e0e0e0; border-color: #555; }
+      input[type="text"]:focus, textarea:focus { border-color: #e0e0e0; }
+      .submit-btn { background: linear-gradient(to bottom, #555, #222); border-color: #444; }
+      .submit-btn:hover { background: linear-gradient(to bottom, #666, #333); }
+    }
   </style>
 </head>
 <body>

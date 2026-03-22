@@ -4,9 +4,7 @@
   "main": "src/worker.ts",
   "compatibility_date": "2024-12-01",
   "compatibility_flags": ["nodejs_compat"],
-  "assets": {
-    "directory": "./public"
-  },
+
   "durable_objects": {
     "bindings": [
       {
@@ -39,7 +37,8 @@
       ],
       "routes": [
         { "custom_domain": true, "pattern": "www.openpolsia.com" },
-        { "custom_domain": true, "pattern": "openpolsia.com" }
+        { "custom_domain": true, "pattern": "openpolsia.com" },
+        { "zone_name": "openpolsia.com", "pattern": "*.openpolsia.com/*" }
       ],
       "durable_objects": {
         "bindings": [
