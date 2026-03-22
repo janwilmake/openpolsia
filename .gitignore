@@ -1,0 +1,5 @@
+node_modules
+.env
+.wrangler
+package-lock.json
+.DS_Store

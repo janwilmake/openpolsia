@@ -1,0 +1,33 @@
+{
+  "name": "openpolsia",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "db:migrate": "wrangler d1 execute openpolsia-db --local --file=migrations/0001_auth.sql"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/janwilmake/openpolsia.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/janwilmake/openpolsia/issues"
+  },
+  "homepage": "https://github.com/janwilmake/openpolsia#readme",
+  "dependencies": {
+    "better-auth": "^1.5.5",
+    "kysely": "^0.28.14",
+    "kysely-d1": "^0.4.0",
+    "wrangler": "^4.76.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260317.1",
+    "typescript": "^5.9.3"
+  }
+}

@@ -26,7 +26,7 @@ What are the components needed:
 What is an POC-level that is "good enough"?
 
 - A user should get one or more durable objects with their own company instance(s): a DB with documents, tasks, chat, email, logs
-- There should be a master DO for all users with balance, companies, transactions
+- There should be a master D1 db for all users with balance, companies, transactions
 - Google Login -> get name + email. The same wow-factor with good paywall onboarding
 - frontend showing all data available for the company
 - LLM with tools to do all things needed.
