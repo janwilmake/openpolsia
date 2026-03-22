@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>New Company — Open Polsia</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: Georgia, 'Times New Roman', serif;
+      color: #111;
+      background: #fff;
+    }
+    .container {
+      max-width: 620px;
+      margin: 0 auto;
+      padding: 40px 24px 60px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 48px;
+    }
+    .header h1 {
+      font-size: 42px;
+      font-weight: 700;
+      letter-spacing: -0.5px;
+    }
+    .header a {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      color: #111;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    h2 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 32px;
+    }
+    .option {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 24px;
+      margin-bottom: 20px;
+      cursor: pointer;
+      transition: border-color 0.15s;
+    }
+    .option:hover, .option.active {
+      border-color: #111;
+    }
+    .option h3 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 6px;
+    }
+    .option p {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 14px;
+      color: #666;
+      margin-bottom: 0;
+    }
+    .input-area {
+      margin-top: 16px;
+      display: none;
+    }
+    .option.active .input-area {
+      display: block;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      padding: 12px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-size: 15px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      outline: none;
+    }
+    input[type="text"]:focus, textarea:focus {
+      border-color: #111;
+    }
+    textarea {
+      resize: vertical;
+      min-height: 80px;
+    }
+    .submit-btn {
+      display: inline-block;
+      margin-top: 32px;
+      padding: 14px 48px;
+      font-size: 16px;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif;
+      font-weight: 500;
+      color: #fff;
+      background: linear-gradient(to bottom, #444, #111);
+      border: 1px solid #000;
+      border-radius: 4px;
+      cursor: pointer;
+      text-decoration: none;
+    }
+    .submit-btn:hover {
+      background: linear-gradient(to bottom, #555, #222);
+    }
+    .submit-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <h1>Open Polsia</h1>
+      <a href="/dashboard">Dashboard</a>
+    </div>
+
+    <h2>Start a new company</h2>
+
+    <div class="option" onclick="selectMethod('describe')">
+      <h3>Describe what you want</h3>
+      <p>Tell us your vision and we'll build it.</p>
+      <div class="input-area">
+        <textarea id="describe-input" placeholder="e.g. A SaaS tool that helps freelancers track invoices..."></textarea>
+      </div>
+    </div>
+
+    <div class="option" onclick="selectMethod('website')">
+      <h3>Start from a website</h3>
+      <p>Give us a URL and we'll model a company around it.</p>
+      <div class="input-area">
+        <input type="text" id="website-input" placeholder="https://example.com" />
+      </div>
+    </div>
+
+    <div class="option" onclick="selectMethod('surprise')">
+      <h3>Surprise me</h3>
+      <p>We'll pick a random idea and run with it.</p>
+    </div>
+
+    <button class="submit-btn" onclick="createCompany()">Create Company</button>
+  </div>
+
+  <script>
+    var selectedMethod = null;
+
+    function selectMethod(method) {
+      selectedMethod = method;
+      var options = document.querySelectorAll('.option');
+      options.forEach(function(el) { el.classList.remove('active'); });
+      event.currentTarget.classList.add('active');
+    }
+
+    function createCompany() {
+      if (!selectedMethod) return;
+
+      var sourceInput = '';
+      if (selectedMethod === 'describe') {
+        sourceInput = document.getElementById('describe-input').value;
+        if (!sourceInput.trim()) return;
+      } else if (selectedMethod === 'website') {
+        sourceInput = document.getElementById('website-input').value;
+        if (!sourceInput.trim()) return;
+      }
+
+      var btn = document.querySelector('.submit-btn');
+      btn.disabled = true;
+      btn.textContent = 'Creating...';
+
+      fetch('/api/companies', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ method: selectedMethod, sourceInput: sourceInput }),
+      })
+        .then(function(res) { return res.json(); })
+        .then(function(data) {
+          if (data.id) {
+            window.location.href = '/dashboard/' + data.id;
+          } else {
+            btn.disabled = false;
+            btn.textContent = 'Create Company';
+          }
+        })
+        .catch(function() {
+          btn.disabled = false;
+          btn.textContent = 'Create Company';
+        });
+    }
+  </script>
+</body>
+</html>

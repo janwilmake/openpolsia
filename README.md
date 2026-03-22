@@ -1,4 +1,6 @@
-What makes it good:
+[![Chat with Repo](https://badge.forgithub.com/janwilmake/openpolsia?badge=chat)](https://uithub.com/janwilmake/openpolsia)
+
+What makes Polsia so good:
 
 - really high conversion to wow moment
 - the identity of the email sending stays Open Polsia, not your own domain/identity, making it easier for people to be comfortable doing this
@@ -25,8 +27,16 @@ What are the components needed:
 
 What is an POC-level that is "good enough"?
 
-- A user should get one or more durable objects with their own company instance(s): a DB with documents, tasks, chat, email, logs
-- There should be a master D1 db for all users with balance, companies, transactions
-- Google Login -> get name + email. The same wow-factor with good paywall onboarding
-- frontend showing all data available for the company
+- ✅ A user should get one or more durable objects with their own company instance(s): a DB with documents, tasks, chat, email, logs
+- ✅ There should be a master D1 db for all users with balance, companies, transactions
+- ✅ Google Login -> get name + email. The same wow-factor with good paywall onboarding
+- ✅ frontend showing all data available for the company
+- ✅ **email integration** to receive emails from `{slug}@openpolsia.com` in the right inbox and also send from any email @openpolsia.com
 - LLM with tools to do all things needed.
+
+TODO
+
+- **stripe integration** to charge for companies and buying tasks
+- **subdomain integration** where static files are deployed from documents `website/*`
+- **task executor queue**
+- **LLM operator** with systemprompt being a file hierarchy and a user message or task, if given, with tools: writeFile, readFile, justBash (see just-bash library: https://raw.githubusercontent.com/vercel-labs/just-bash/refs/heads/main/README.md), listTasks, createTask, editTask, sendMail, readMail, listMail, sendMessage, webSearch, webFetch (use parallel: https://docs.parallel.ai/api-reference/search-beta/search.md, https://docs.parallel.ai/api-reference/extract-beta/extract.md)

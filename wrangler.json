@@ -7,6 +7,20 @@
   "assets": {
     "directory": "./public"
   },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "COMPANY_DO",
+        "class_name": "CompanyDO"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["CompanyDO"]
+    }
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -26,6 +40,20 @@
       "routes": [
         { "custom_domain": true, "pattern": "www.openpolsia.com" },
         { "custom_domain": true, "pattern": "openpolsia.com" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          {
+            "name": "COMPANY_DO",
+            "class_name": "CompanyDO"
+          }
+        ]
+      },
+      "migrations": [
+        {
+          "tag": "v1",
+          "new_sqlite_classes": ["CompanyDO"]
+        }
       ]
     }
   }
