@@ -1,5 +1,5 @@
 import { DurableObject } from "cloudflare:workers";
-import type { Env } from "./worker";
+import type { Env } from "./types";
 import { runOperator, executeOperatorTask, type OperatorContext } from "./llm-operator";
 
 export class CompanyDO extends DurableObject<Env> {

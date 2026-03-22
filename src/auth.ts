@@ -1,6 +1,6 @@
 import { betterAuth } from "better-auth";
 import { D1Dialect } from "kysely-d1";
-import type { Env } from "./worker";
+import type { Env } from "./types";
 
 export function createAuth(env: Env) {
   return betterAuth({
