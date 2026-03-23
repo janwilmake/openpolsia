@@ -150,11 +150,15 @@ export async function handleWebhook(
             .first<{ user_id: string }>();
 
           if (billing) {
+            // Fetch subscription to get quantity (number of companies)
+            const subscription = await stripe.subscriptions.retrieve(subId);
+            const quantity = subscription.items.data[0]?.quantity ?? 1;
+
             await env.DB.prepare(
-              `UPDATE user_billing SET stripe_subscription_id = ?, subscription_status = 'active'
+              `UPDATE user_billing SET stripe_subscription_id = ?, subscription_status = 'active', subscribed_company_count = ?
                WHERE user_id = ?`
             )
-              .bind(subId, billing.user_id)
+              .bind(subId, quantity, billing.user_id)
               .run();
           }
         }
@@ -190,10 +194,11 @@ export async function handleWebhook(
       const status = sub.status === "active" || sub.status === "trialing"
         ? "active"
         : sub.status;
+      const quantity = sub.items.data[0]?.quantity ?? 1;
       await env.DB.prepare(
-        `UPDATE user_billing SET subscription_status = ? WHERE stripe_subscription_id = ?`
+        `UPDATE user_billing SET subscription_status = ?, subscribed_company_count = ? WHERE stripe_subscription_id = ?`
       )
-        .bind(status, sub.id)
+        .bind(status, quantity, sub.id)
         .run();
       break;
     }

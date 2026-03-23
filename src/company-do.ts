@@ -331,6 +331,14 @@ export class CompanyDO extends DurableObject<Env> {
 
     // POST /chat/stream — LLM operator streaming chat
     if (url.pathname === "/chat/stream" && request.method === "POST") {
+      // Block chat for companies over the subscription limit
+      if (request.headers.get("x-company-over-limit") === "1") {
+        return Response.json(
+          { error: "This company exceeds your subscription limit. Upgrade your plan to enable chat for more companies." },
+          { status: 403 }
+        );
+      }
+
       const body = await request.json<{ content: string }>();
       const companySlug = request.headers.get("x-company-slug") || "unknown";
       const companyName = request.headers.get("x-company-name") || "Unknown Company";

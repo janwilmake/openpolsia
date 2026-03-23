@@ -130,15 +130,16 @@ export default {
 
       if (url.pathname === "/api/billing/status" && request.method === "GET") {
         const billing = await env.DB.prepare(
-          `SELECT task_credits, tasks_used, subscription_status FROM user_billing WHERE user_id = ?`
+          `SELECT task_credits, tasks_used, subscription_status, subscribed_company_count FROM user_billing WHERE user_id = ?`
         )
           .bind(session.user.id)
-          .first<{ task_credits: number; tasks_used: number; subscription_status: string }>();
+          .first<{ task_credits: number; tasks_used: number; subscription_status: string; subscribed_company_count: number }>();
 
         return Response.json({
           hasActiveSubscription: billing?.subscription_status === "active",
           taskCredits: billing?.task_credits ?? 50,
           tasksUsed: billing?.tasks_used ?? 0,
+          subscribedCompanyCount: billing?.subscribed_company_count ?? 0,
         });
       }
 
@@ -152,6 +153,31 @@ export default {
         return Response.json({ error: "Unauthorized" }, { status: 401 });
 
       if (request.method === "POST") {
+        // Check company limit based on subscription
+        const billing = await env.DB.prepare(
+          `SELECT subscription_status, subscribed_company_count FROM user_billing WHERE user_id = ?`
+        )
+          .bind(session.user.id)
+          .first<{ subscription_status: string; subscribed_company_count: number }>();
+
+        const subscribedCount = billing?.subscribed_company_count ?? 0;
+        const hasSubscription = billing?.subscription_status === "active";
+
+        if (hasSubscription) {
+          const { results: existing } = await env.DB.prepare(
+            `SELECT id FROM "company" WHERE user_id = ?`
+          )
+            .bind(session.user.id)
+            .all();
+
+          if (existing.length >= subscribedCount) {
+            return Response.json(
+              { error: `You can only have ${subscribedCount} company${subscribedCount === 1 ? "" : "ies"} with your current subscription. Upgrade to add more.` },
+              { status: 403 }
+            );
+          }
+        }
+
         const body = await request.json<{
           method: string;
           sourceInput?: string;
@@ -342,6 +368,24 @@ export default {
         return Response.json({ ok: true, resend_id: (resendData as any).id });
       }
 
+      // Compute company index (0-based, ordered by creation date ASC)
+      const { results: allCompanies } = await env.DB.prepare(
+        `SELECT id FROM "company" WHERE user_id = ? ORDER BY created_at ASC`
+      )
+        .bind(session.user.id)
+        .all<{ id: string }>();
+      const companyIndex = allCompanies.findIndex((c) => c.id === companyId);
+
+      // Fetch subscribed company count
+      const userBilling = await env.DB.prepare(
+        `SELECT subscription_status, subscribed_company_count FROM user_billing WHERE user_id = ?`
+      )
+        .bind(session.user.id)
+        .first<{ subscription_status: string; subscribed_company_count: number }>();
+      const subscribedCount = userBilling?.subscribed_company_count ?? 0;
+      const isSubscribed = userBilling?.subscription_status === "active";
+      const companyOverLimit = isSubscribed && companyIndex >= subscribedCount;
+
       // Forward to DO with company metadata headers
       const doHeaders = new Headers(request.headers);
       doHeaders.set("x-company-id", company.id);
@@ -350,6 +394,7 @@ export default {
       doHeaders.set("x-company-user-id", company.user_id);
       doHeaders.set("x-user-email", session.user.email || "");
       doHeaders.set("x-user-name", session.user.name || "");
+      doHeaders.set("x-company-over-limit", companyOverLimit ? "1" : "0");
 
       return stub.fetch(
         new Request("https://do" + doPath, {
@@ -430,15 +475,16 @@ export default {
 
       // Fetch billing status
       const billing = await env.DB.prepare(
-        `SELECT task_credits, tasks_used, subscription_status FROM user_billing WHERE user_id = ?`
+        `SELECT task_credits, tasks_used, subscription_status, subscribed_company_count FROM user_billing WHERE user_id = ?`
       )
         .bind(session.user.id)
-        .first<{ task_credits: number; tasks_used: number; subscription_status: string }>();
+        .first<{ task_credits: number; tasks_used: number; subscription_status: string; subscribed_company_count: number }>();
 
       const billingData = {
         hasActiveSubscription: billing?.subscription_status === "active",
         taskCredits: billing?.task_credits ?? 50,
         tasksUsed: billing?.tasks_used ?? 0,
+        subscribedCompanyCount: billing?.subscribed_company_count ?? 0,
       };
 
       const name = session.user.name || session.user.email;

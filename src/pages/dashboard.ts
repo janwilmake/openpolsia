@@ -19,6 +19,7 @@ export interface BillingData {
   hasActiveSubscription: boolean;
   taskCredits: number;
   tasksUsed: number;
+  subscribedCompanyCount: number;
 }
 
 export function dashboardHTML(
@@ -34,12 +35,28 @@ export function dashboardHTML(
   const protocol = isLocal ? "http" : "https";
   const eName = escapeHtml(userName);
 
+  // Determine if selected company is over the subscription limit
+  // Companies ordered by created_at ASC; index >= subscribedCompanyCount means over limit
+  const subscribedCount = billing?.subscribedCompanyCount ?? 0;
+  const isSubscribed = billing?.hasActiveSubscription ?? false;
+  let selectedCompanyOverLimit = false;
+  if (isSubscribed && selectedCompany) {
+    const sortedByCreation = [...companies].sort(
+      (a, b) => a.created_at.localeCompare(b.created_at)
+    );
+    const idx = sortedByCreation.findIndex((c) => c.id === selectedCompany.id);
+    selectedCompanyOverLimit = idx >= subscribedCount;
+  }
+
+  const atCompanyLimit = isSubscribed && companies.length >= subscribedCount;
   const companySwitcher =
     companies.length > 0
       ? `<select id="company-select" onchange="switchCompany(this.value)">
         ${companies.map((c) => `<option value="${escapeHtml(c.id)}" ${selectedCompany && c.id === selectedCompany.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
       </select>
-      <a href="/new" class="topbar-btn" title="New company">+ New</a>
+      ${atCompanyLimit
+        ? `<a onclick="manageSubscription()" class="topbar-btn" title="Upgrade to add more companies">+ New</a>`
+        : `<a href="/new" class="topbar-btn" title="New company">+ New</a>`}
       <a onclick="deleteCompany()" class="topbar-btn topbar-delete" title="Delete company">&times;</a>`
       : "";
 
@@ -602,10 +619,14 @@ export function dashboardHTML(
       <button class="chat-close" onclick="toggleChat()">&times;</button>
     </div>
     <div class="chat-messages" id="chat-messages"></div>
+    ${selectedCompanyOverLimit ? `
+    <div style="padding:12px 20px;border-top:1px solid #ddd;font-size:13px;color:#888;text-align:center">
+      Chat disabled — this company exceeds your subscription limit. <a onclick="manageSubscription()" style="color:#111;cursor:pointer;text-decoration:underline">Upgrade</a>
+    </div>` : `
     <div class="chat-input-area">
       <input type="text" id="chat-input" placeholder="Ask Polsia anything..." onkeydown="if(event.key==='Enter')sendMessage()" />
       <button class="chat-send" onclick="sendMessage()">→</button>
-    </div>
+    </div>`}
   </div>
 
   <script>
@@ -613,6 +634,7 @@ export function dashboardHTML(
     var COMPANY_SLUG = '${selectedCompany ? escapeHtml(selectedCompany.slug) : ""}';
     var BASE_DOMAIN = '${baseDomain}';
     var PROTOCOL = '${protocol}';
+    var COMPANY_OVER_LIMIT = ${selectedCompanyOverLimit ? "true" : "false"};
 
     function isSmallScreen() {
       return window.innerWidth <= 1100;
@@ -812,6 +834,7 @@ export function dashboardHTML(
     var isSending = false;
 
     function sendMessage() {
+      if (COMPANY_OVER_LIMIT) return;
       var input = document.getElementById('chat-input');
       var text = input.value.trim();
       if (!text || !COMPANY_ID || isSending) return;
