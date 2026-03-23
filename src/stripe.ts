@@ -150,10 +150,9 @@ export async function handleWebhook(
             .first<{ user_id: string }>();
 
           if (billing) {
-            // Update the first company without a subscription to active
             await env.DB.prepare(
-              `UPDATE company SET stripe_subscription_id = ?, subscription_status = 'active'
-               WHERE user_id = ? AND subscription_status = 'none' LIMIT 1`
+              `UPDATE user_billing SET stripe_subscription_id = ?, subscription_status = 'active'
+               WHERE user_id = ?`
             )
               .bind(subId, billing.user_id)
               .run();
@@ -192,7 +191,7 @@ export async function handleWebhook(
         ? "active"
         : sub.status;
       await env.DB.prepare(
-        `UPDATE company SET subscription_status = ? WHERE stripe_subscription_id = ?`
+        `UPDATE user_billing SET subscription_status = ? WHERE stripe_subscription_id = ?`
       )
         .bind(status, sub.id)
         .run();
@@ -202,7 +201,7 @@ export async function handleWebhook(
     case "customer.subscription.deleted": {
       const sub = event.data.object as Stripe.Subscription;
       await env.DB.prepare(
-        `UPDATE company SET subscription_status = 'cancelled', stripe_subscription_id = NULL WHERE stripe_subscription_id = ?`
+        `UPDATE user_billing SET subscription_status = 'cancelled', stripe_subscription_id = NULL WHERE stripe_subscription_id = ?`
       )
         .bind(sub.id)
         .run();

@@ -130,20 +130,13 @@ export default {
 
       if (url.pathname === "/api/billing/status" && request.method === "GET") {
         const billing = await env.DB.prepare(
-          `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
+          `SELECT task_credits, tasks_used, subscription_status FROM user_billing WHERE user_id = ?`
         )
           .bind(session.user.id)
-          .first<{ task_credits: number; tasks_used: number }>();
-
-        const { results: subs } = await env.DB.prepare(
-          `SELECT subscription_status FROM company WHERE user_id = ? AND subscription_status = 'active'`
-        )
-          .bind(session.user.id)
-          .all<{ subscription_status: string }>();
+          .first<{ task_credits: number; tasks_used: number; subscription_status: string }>();
 
         return Response.json({
-          hasActiveSubscription: subs.length > 0,
-          subscribedCompanies: subs.length,
+          hasActiveSubscription: billing?.subscription_status === "active",
           taskCredits: billing?.task_credits ?? 50,
           tasksUsed: billing?.tasks_used ?? 0,
         });
@@ -351,8 +344,10 @@ export default {
 
       // Forward to DO with company metadata headers
       const doHeaders = new Headers(request.headers);
+      doHeaders.set("x-company-id", company.id);
       doHeaders.set("x-company-slug", company.slug);
       doHeaders.set("x-company-name", company.name);
+      doHeaders.set("x-company-user-id", company.user_id);
       doHeaders.set("x-user-email", session.user.email || "");
       doHeaders.set("x-user-name", session.user.name || "");
 
@@ -435,17 +430,13 @@ export default {
 
       // Fetch billing status
       const billing = await env.DB.prepare(
-        `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
+        `SELECT task_credits, tasks_used, subscription_status FROM user_billing WHERE user_id = ?`
       )
         .bind(session.user.id)
-        .first<{ task_credits: number; tasks_used: number }>();
-
-      const hasActiveSubscription = companies.some(
-        (c) => c.subscription_status === "active"
-      );
+        .first<{ task_credits: number; tasks_used: number; subscription_status: string }>();
 
       const billingData = {
-        hasActiveSubscription,
+        hasActiveSubscription: billing?.subscription_status === "active",
         taskCredits: billing?.task_credits ?? 50,
         tasksUsed: billing?.tasks_used ?? 0,
       };

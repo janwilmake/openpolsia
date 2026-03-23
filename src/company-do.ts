@@ -337,6 +337,15 @@ export class CompanyDO extends DurableObject<Env> {
       const userEmail = request.headers.get("x-user-email") || undefined;
       const userName = request.headers.get("x-user-name") || undefined;
 
+      // /clear command: wipe chat history (not task messages) and return
+      if (body.content.trim().toLowerCase() === "/clear") {
+        sql.exec("DELETE FROM chat_message WHERE task_id IS NULL");
+        this.notifySSE("update", { type: "chat" });
+        return new Response("Chat history cleared.", {
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+        });
+      }
+
       // Save user message
       const msgId = crypto.randomUUID();
       const now = new Date().toISOString();
@@ -346,25 +355,35 @@ export class CompanyDO extends DurableObject<Env> {
       );
 
       // Build message history from last 20 messages for context
-      const history = [...sql.exec(
-        "SELECT role, content FROM chat_message WHERE type = 'message' ORDER BY created_at ASC"
+      // Filter out task execution messages (they have task_id set) to avoid
+      // consecutive assistant messages which break Anthropic's alternating role requirement
+      const rawHistory = [...sql.exec(
+        "SELECT role, content FROM chat_message WHERE type = 'message' AND task_id IS NULL ORDER BY created_at ASC"
       )].slice(-20).map((m: any) => ({
         role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
         content: m.content as string,
       }));
 
-      const companyId = (await this.ctx.storage.get("companyId")) as string || "unknown";
+      // Merge consecutive same-role messages as a safety net
+      const history: Array<{ role: "user" | "assistant"; content: string }> = [];
+      for (const msg of rawHistory) {
+        if (history.length > 0 && history[history.length - 1].role === msg.role) {
+          history[history.length - 1].content += "\n\n" + msg.content;
+        } else {
+          history.push({ ...msg });
+        }
+      }
 
-      // Fetch billing status for this company's owner
-      const company = await this.env.DB.prepare(
-        `SELECT user_id, subscription_status FROM company WHERE id = ?`
-      ).bind(companyId).first<{ user_id: string; subscription_status: string }>();
+      const companyId = request.headers.get("x-company-id")
+        || (await this.ctx.storage.get("companyId")) as string
+        || "unknown";
+      const companyUserId = request.headers.get("x-company-user-id") || "";
 
-      const billingRow = company ? await this.env.DB.prepare(
-        `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
-      ).bind(company.user_id).first<{ task_credits: number; tasks_used: number }>() : null;
+      const billingRow = companyUserId ? await this.env.DB.prepare(
+        `SELECT task_credits, tasks_used, subscription_status FROM user_billing WHERE user_id = ?`
+      ).bind(companyUserId).first<{ task_credits: number; tasks_used: number; subscription_status: string }>() : null;
 
-      const subscriptionActive = company?.subscription_status === "active";
+      const subscriptionActive = billingRow?.subscription_status === "active";
       const taskCreditsRemaining = (billingRow?.task_credits ?? 50) - (billingRow?.tasks_used ?? 0);
 
       const chatStorage = this.ctx.storage;
@@ -470,14 +489,14 @@ export class CompanyDO extends DurableObject<Env> {
 
     // Fetch billing status
     const companyRow = await this.env.DB.prepare(
-      `SELECT user_id, subscription_status FROM company WHERE id = ?`
-    ).bind(companyId).first<{ user_id: string; subscription_status: string }>();
+      `SELECT user_id FROM company WHERE id = ?`
+    ).bind(companyId).first<{ user_id: string }>();
 
     const billingRow = companyRow ? await this.env.DB.prepare(
-      `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
-    ).bind(companyRow.user_id).first<{ task_credits: number; tasks_used: number }>() : null;
+      `SELECT task_credits, tasks_used, subscription_status FROM user_billing WHERE user_id = ?`
+    ).bind(companyRow.user_id).first<{ task_credits: number; tasks_used: number; subscription_status: string }>() : null;
 
-    const subscriptionActive = companyRow?.subscription_status === "active";
+    const subscriptionActive = billingRow?.subscription_status === "active";
     const taskCreditsRemaining = (billingRow?.task_credits ?? 50) - (billingRow?.tasks_used ?? 0);
 
     // Skip task if no subscription and no free credits remaining

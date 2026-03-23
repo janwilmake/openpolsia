@@ -23,8 +23,6 @@ export interface Company {
   method: string;
   source_input: string | null;
   created_at: string;
-  stripe_subscription_id: string | null;
-  subscription_status: string;
 }
 
 export function escapeHtml(str: string) {

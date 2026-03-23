@@ -41,9 +41,7 @@ What is an POC-level that is "good enough"?
 - ✅ slug should adapt to the name which should be chosen in the first task
 - ✅ make the dashboard auto-update using a SSE endpoint
 
-TODO
-
-- **stripe integration**
+- ✅ **stripe integration**
   - charge for companies ($50/m/company) and buying tasks ($1/task after 50 free)
   - only the initial creation is done for free, but then, tools are disabled until you purchase at least 1 company. the system prompt instructs the model to say that the user neds to purchase the subscription first.
   - there is a card on the left column 'business' that shows 'Hire Your AI Employee, $1.63/day · Works while you sleep, Start free trial, 3-day trial · $49/mo' that opens the payment modal when clicke
@@ -53,3 +51,5 @@ TODO
 ```
 For local testing: stripe listen --forward-to localhost:8787/api/webhooks/stripe
 ```
+
+TODO
