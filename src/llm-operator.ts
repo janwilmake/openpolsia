@@ -549,7 +549,10 @@ export function runOperator(
     tools,
     stopWhen: stepCountIs(10),
     onFinish: (event) => {
-      // Save all tool calls and results from all steps
+      // Save all tool calls and results with sequential timestamps
+      // so they sort BEFORE the final text message
+      const now = Date.now();
+      let seq = 0;
       for (const step of event.steps) {
         if (step.toolCalls) {
           for (const tc of step.toolCalls) {
@@ -559,8 +562,9 @@ export function runOperator(
               "assistant",
               "tool_call",
               JSON.stringify({ tool: tc.toolName, input: tc.input }),
-              new Date().toISOString()
+              new Date(now + seq).toISOString()
             );
+            seq++;
           }
         }
         if (step.toolResults) {
@@ -570,22 +574,27 @@ export function runOperator(
               crypto.randomUUID(),
               "assistant",
               "tool_result",
-              JSON.stringify({ tool: tr.toolName, result: tr.result }),
-              new Date().toISOString()
+              JSON.stringify({ tool: tr.toolName, result: tr.output }),
+              new Date(now + seq).toISOString()
             );
+            seq++;
           }
         }
       }
-      // Finalize the streaming message
+      // Finalize the streaming message with timestamp after all tool events
       sql.exec(
-        "UPDATE chat_message SET type = 'message', content = ? WHERE id = ?",
+        "UPDATE chat_message SET type = 'message', content = ?, created_at = ? WHERE id = ?",
         event.text || "",
+        new Date(now + seq + 1).toISOString(),
         streamMsgId
       );
+      // Notify SSE clients so chat updates without needing a refresh
+      ctx.onDataChange?.("chat");
     }
   });
 
   // Create a custom stream that saves partial text to DB as it arrives
+  // Sends NDJSON events: {"t":"d","v":"..."} for text, {"t":"c",...} for tool calls, {"t":"r",...} for results
   const encoder = new TextEncoder();
   let accumulated = "";
   let lastSaveLen = 0;
@@ -593,27 +602,34 @@ export function runOperator(
 
   const stream = new ReadableStream({
     async start(controller) {
+      function send(line: string) {
+        if (!clientConnected) return;
+        try {
+          controller.enqueue(encoder.encode(line + "\n"));
+        } catch {
+          clientConnected = false;
+        }
+      }
+
       try {
-        for await (const chunk of result.textStream) {
-          accumulated += chunk;
+        for await (const event of result.fullStream) {
+          if (event.type === "text-delta") {
+            accumulated += event.text;
+            send(JSON.stringify({ t: "d", v: event.text }));
 
-          // Write to client if still connected
-          if (clientConnected) {
-            try {
-              controller.enqueue(encoder.encode(chunk));
-            } catch {
-              clientConnected = false;
+            // Save to DB every 200 chars
+            if (accumulated.length - lastSaveLen >= 200) {
+              sql.exec(
+                "UPDATE chat_message SET content = ? WHERE id = ?",
+                accumulated,
+                streamMsgId
+              );
+              lastSaveLen = accumulated.length;
             }
-          }
-
-          // Save to DB every 200 chars
-          if (accumulated.length - lastSaveLen >= 200) {
-            sql.exec(
-              "UPDATE chat_message SET content = ? WHERE id = ?",
-              accumulated,
-              streamMsgId
-            );
-            lastSaveLen = accumulated.length;
+          } else if (event.type === "tool-call") {
+            send(JSON.stringify({ t: "c", tool: event.toolName, input: event.input }));
+          } else if (event.type === "tool-result") {
+            send(JSON.stringify({ t: "r", tool: event.toolName, result: event.output }));
           }
         }
 
@@ -700,7 +716,7 @@ export async function executeOperatorTask(
           crypto.randomUUID(),
           "assistant",
           "tool_result",
-          JSON.stringify({ tool: tr.toolName, result: tr.result }),
+          JSON.stringify({ tool: tr.toolName, result: tr.output }),
           taskId,
           new Date().toISOString()
         );

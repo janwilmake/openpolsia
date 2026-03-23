@@ -869,18 +869,72 @@ export function dashboardHTML(
       }).then(function(response) {
         var reader = response.body.getReader();
         var decoder = new TextDecoder();
-        var fullText = '';
+        var contentBlocks = []; // {type:'text',content:''} | {type:'tool_call',...} | {type:'tool_result',...}
+        var currentText = null;
+        var ndjsonBuf = '';
+
+        function addTextDelta(delta) {
+          if (!currentText) {
+            currentText = { type: 'text', content: '' };
+            contentBlocks.push(currentText);
+          }
+          currentText.content += delta;
+        }
+
+        function addToolEvent(ev) {
+          currentText = null;
+          contentBlocks.push(ev);
+        }
+
+        function renderBlocks() {
+          var html = '';
+          for (var i = 0; i < contentBlocks.length; i++) {
+            var block = contentBlocks[i];
+            if (block.type === 'text') {
+              html += '<div class="rendered-md">' + renderMarkdown(block.content) + '</div>';
+            } else {
+              html += renderToolMsg({
+                type: block.type,
+                content: JSON.stringify(block.type === 'tool_call'
+                  ? { tool: block.tool, input: block.input }
+                  : { tool: block.tool, result: block.result })
+              });
+            }
+          }
+          return html;
+        }
 
         function read() {
           reader.read().then(function(result) {
             if (result.done) {
               isSending = false;
               textEl.classList.remove('chat-streaming');
-              textEl.innerHTML = renderMarkdown(fullText);
+              textEl.innerHTML = renderBlocks();
+              el.scrollTop = el.scrollHeight;
+              // Reload from DB to get canonical ordering
+              loadChat();
               return;
             }
-            fullText += decoder.decode(result.value, { stream: true });
-            textEl.innerHTML = renderMarkdown(fullText);
+            ndjsonBuf += decoder.decode(result.value, { stream: true });
+            var lines = ndjsonBuf.split('\\n');
+            ndjsonBuf = lines.pop();
+            for (var i = 0; i < lines.length; i++) {
+              var line = lines[i].trim();
+              if (!line) continue;
+              try {
+                var ev = JSON.parse(line);
+                if (ev.t === 'd') {
+                  addTextDelta(ev.v);
+                } else if (ev.t === 'c') {
+                  addToolEvent({ type: 'tool_call', tool: ev.tool, input: ev.input });
+                } else if (ev.t === 'r') {
+                  addToolEvent({ type: 'tool_result', tool: ev.tool, result: ev.result });
+                }
+              } catch(e) {
+                addTextDelta(line);
+              }
+            }
+            textEl.innerHTML = renderBlocks();
             el.scrollTop = el.scrollHeight;
             read();
           });
@@ -903,7 +957,7 @@ export function dashboardHTML(
       var body = isCall
         ? JSON.stringify(parsed.input || {}, null, 2)
         : JSON.stringify(parsed.result || parsed, null, 2);
-      return '<div class="chat-tool ' + cls + '" onclick="this.classList.toggle(\\\'open\\\')">'
+      return '<div class="chat-tool ' + cls + '" onclick="this.classList.toggle(&quot;open&quot;)">'
         + '<div class="chat-tool-header">'
         + '<span class="chat-tool-toggle">▶</span>'
         + '<span class="chat-tool-name">' + esc(label + ': ' + toolName) + '</span>'
@@ -1020,7 +1074,7 @@ export function dashboardHTML(
           return;
         }
         refreshDashboard();
-        if (data.type === 'chat') loadChat();
+        if (data.type === 'chat' && !isSending) loadChat();
       });
       es.addEventListener('connected', function() {});
       es.onerror = function() {
