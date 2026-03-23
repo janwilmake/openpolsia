@@ -100,6 +100,42 @@ export async function createPortalSession(
   return session.url;
 }
 
+export async function updateSubscriptionQuantity(
+  env: Env,
+  userId: string,
+  newQuantity: number
+): Promise<{ success: boolean; error?: string }> {
+  const billing = await env.DB.prepare(
+    `SELECT stripe_subscription_id FROM user_billing WHERE user_id = ?`
+  )
+    .bind(userId)
+    .first<{ stripe_subscription_id: string | null }>();
+
+  if (!billing?.stripe_subscription_id) {
+    return { success: false, error: "No active subscription found" };
+  }
+
+  const stripe = getStripe(env);
+  const subscription = await stripe.subscriptions.retrieve(billing.stripe_subscription_id);
+  const itemId = subscription.items.data[0]?.id;
+
+  if (!itemId) {
+    return { success: false, error: "No subscription item found" };
+  }
+
+  await stripe.subscriptions.update(billing.stripe_subscription_id, {
+    items: [{ id: itemId, quantity: newQuantity }],
+  });
+
+  await env.DB.prepare(
+    `UPDATE user_billing SET subscribed_company_count = ? WHERE user_id = ?`
+  )
+    .bind(newQuantity, userId)
+    .run();
+
+  return { success: true };
+}
+
 export async function handleWebhook(
   env: Env,
   request: Request

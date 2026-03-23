@@ -9,6 +9,7 @@ import {
   createCheckoutSession,
   createTaskPurchaseSession,
   createPortalSession,
+  updateSubscriptionQuantity,
   handleWebhook,
 } from "./stripe";
 import indexPageHTML from "../public/index.html";
@@ -126,6 +127,19 @@ export default {
         const customerId = await createOrGetCustomer(env, session.user.id, session.user.email);
         const portalUrl = await createPortalSession(env, customerId, returnUrl);
         return Response.json({ url: portalUrl });
+      }
+
+      if (url.pathname === "/api/billing/update-quantity" && request.method === "POST") {
+        const body = await request.json<{ quantity?: number }>();
+        const quantity = body.quantity;
+        if (!quantity || quantity < 1 || quantity > 100) {
+          return Response.json({ error: "Invalid quantity" }, { status: 400 });
+        }
+        const result = await updateSubscriptionQuantity(env, session.user.id, quantity);
+        if (!result.success) {
+          return Response.json({ error: result.error }, { status: 400 });
+        }
+        return Response.json({ ok: true, quantity });
       }
 
       if (url.pathname === "/api/billing/status" && request.method === "GET") {

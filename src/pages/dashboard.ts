@@ -55,7 +55,7 @@ export function dashboardHTML(
         ${companies.map((c) => `<option value="${escapeHtml(c.id)}" ${selectedCompany && c.id === selectedCompany.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`).join("")}
       </select>
       ${atCompanyLimit
-        ? `<a onclick="manageSubscription()" class="topbar-btn" title="Upgrade to add more companies">+ New</a>`
+        ? `<a onclick="openBillingModal()" class="topbar-btn" title="Upgrade to add more companies">+ New</a>`
         : `<a href="/new" class="topbar-btn" title="New company">+ New</a>`}
       <a onclick="deleteCompany()" class="topbar-btn topbar-delete" title="Delete company">&times;</a>`
       : "";
@@ -585,10 +585,10 @@ export function dashboardHTML(
   <div class="modal-overlay" id="billing-modal" style="display:none" onclick="if(event.target===this)closeBillingModal()">
     <div class="modal-box">
       <div class="modal-header">
-        <h2 style="font-family:Georgia,serif;font-size:22px;font-weight:700">Subscribe to Open Polsia</h2>
+        <h2 style="font-family:Georgia,serif;font-size:22px;font-weight:700" id="billing-modal-title">Subscribe to Open Polsia</h2>
         <button class="chat-close" onclick="closeBillingModal()">&times;</button>
       </div>
-      <div class="modal-body">
+      <div class="modal-body" id="billing-modal-new">
         <div style="margin-bottom:20px">
           <div style="font-size:15px;margin-bottom:8px"><strong>AI Employee Companies</strong></div>
           <div style="font-size:13px;color:#666;margin-bottom:12px">$49/mo per company &middot; 3-day free trial</div>
@@ -608,6 +608,23 @@ export function dashboardHTML(
         </div>
         <button onclick="startCheckout()" class="billing-btn" style="width:100%;padding:12px">Start free trial</button>
         <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">You can cancel anytime during the trial</div>
+      </div>
+      <div class="modal-body" id="billing-modal-upgrade" style="display:none">
+        <div style="margin-bottom:16px">
+          <div style="font-size:15px;margin-bottom:8px"><strong>Company limit reached</strong></div>
+          <div style="font-size:13px;color:#666;margin-bottom:12px">You're subscribed to <strong>${subscribedCount}</strong> ${subscribedCount === 1 ? 'company' : 'companies'} but have <strong>${companies.length}</strong>. Increase your plan to add more.</div>
+          <div style="display:flex;align-items:center;gap:12px">
+            <label style="font-size:13px">New company count:</label>
+            <select id="upgrade-qty" style="padding:6px 10px;border:1px solid #ccc;border-radius:4px;font-size:14px">
+              ${[2, 3, 5, 10, 15, 20].filter(n => n > subscribedCount).map(n => `<option value="${n}"${n === companies.length + 1 ? ' selected' : ''}>${n} companies</option>`).join('')}
+            </select>
+          </div>
+        </div>
+        <div style="border-top:1px solid #eee;padding-top:16px;margin-bottom:16px">
+          <div style="font-size:13px;color:#666" id="upgrade-summary"></div>
+        </div>
+        <button onclick="submitUpgrade()" id="upgrade-btn" class="billing-btn" style="width:100%;padding:12px">Upgrade plan</button>
+        <div style="font-size:11px;color:#999;text-align:center;margin-top:8px">Prorated charges apply immediately</div>
       </div>
     </div>
   </div>
@@ -701,9 +718,21 @@ export function dashboardHTML(
       }).then(function() { window.location.href = '/'; });
     }
 
+    var IS_SUBSCRIBED = ${isSubscribed ? "true" : "false"};
+    var AT_COMPANY_LIMIT = ${atCompanyLimit ? "true" : "false"};
+
     function openBillingModal() {
       document.getElementById('billing-modal').style.display = 'flex';
-      updateBillingSummary();
+      if (IS_SUBSCRIBED && AT_COMPANY_LIMIT) {
+        document.getElementById('billing-modal-title').textContent = 'Upgrade your plan';
+        document.getElementById('billing-modal-new').style.display = 'none';
+        document.getElementById('billing-modal-upgrade').style.display = 'block';
+      } else {
+        document.getElementById('billing-modal-title').textContent = 'Subscribe to Open Polsia';
+        document.getElementById('billing-modal-new').style.display = 'block';
+        document.getElementById('billing-modal-upgrade').style.display = 'none';
+        updateBillingSummary();
+      }
     }
     function closeBillingModal() {
       document.getElementById('billing-modal').style.display = 'none';
@@ -741,6 +770,48 @@ export function dashboardHTML(
         body: JSON.stringify({ quantity: n }),
       }).then(function(r) { return r.json(); })
         .then(function(data) { if (data.url) window.location.href = data.url; });
+    }
+
+    function updateUpgradeSummary() {
+      var el = document.getElementById('upgrade-qty');
+      var summary = document.getElementById('upgrade-summary');
+      if (!el || !summary) return;
+      var qty = parseInt(el.value, 10) || 1;
+      summary.textContent = 'New total: $' + (qty * 49) + '/mo for ' + qty + ' companies';
+    }
+    (function() {
+      var sel = document.getElementById('upgrade-qty');
+      if (sel) {
+        sel.addEventListener('change', updateUpgradeSummary);
+        updateUpgradeSummary();
+      }
+    })();
+
+    function submitUpgrade() {
+      var qty = parseInt(document.getElementById('upgrade-qty').value, 10);
+      if (!qty) return;
+      var btn = document.getElementById('upgrade-btn');
+      btn.textContent = 'Upgrading...';
+      btn.disabled = true;
+      fetch('/api/billing/update-quantity', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ quantity: qty }),
+      }).then(function(r) { return r.json(); })
+        .then(function(data) {
+          if (data.ok) {
+            window.location.reload();
+          } else {
+            btn.textContent = 'Upgrade plan';
+            btn.disabled = false;
+            alert(data.error || 'Failed to upgrade');
+          }
+        }).catch(function() {
+          btn.textContent = 'Upgrade plan';
+          btn.disabled = false;
+          alert('Network error');
+        });
     }
 
     function manageSubscription() {
