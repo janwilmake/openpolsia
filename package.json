@@ -6,8 +6,8 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy --env prod",
-    "db:migrate": "wrangler d1 execute openpolsia-db --local --file=migrations/0001_auth.sql && wrangler d1 execute openpolsia-db --local --file=migrations/0002_companies.sql && wrangler d1 execute openpolsia-db --local --file=migrations/0003_snake_case.sql && wrangler d1 execute openpolsia-db --local --file=migrations/0004_company_slug.sql",
-    "db:migrate:remote": "wrangler d1 execute openpolsia-db --remote --file=migrations/0001_auth.sql && wrangler d1 execute openpolsia-db --remote --file=migrations/0002_companies.sql && wrangler d1 execute openpolsia-db --remote --file=migrations/0003_snake_case.sql && wrangler d1 execute openpolsia-db --remote --file=migrations/0004_company_slug.sql"
+    "db:migrate": "wrangler d1 execute openpolsia-db --local --file=migrations/0001_auth.sql && wrangler d1 execute openpolsia-db --local --file=migrations/0002_companies.sql && wrangler d1 execute openpolsia-db --local --file=migrations/0003_snake_case.sql && wrangler d1 execute openpolsia-db --local --file=migrations/0004_company_slug.sql && wrangler d1 execute openpolsia-db --local --file=migrations/0005_stripe.sql",
+    "db:migrate:remote": "wrangler d1 execute openpolsia-db --remote --file=migrations/0001_auth.sql && wrangler d1 execute openpolsia-db --remote --file=migrations/0002_companies.sql && wrangler d1 execute openpolsia-db --remote --file=migrations/0003_snake_case.sql && wrangler d1 execute openpolsia-db --remote --file=migrations/0004_company_slug.sql && wrangler d1 execute openpolsia-db --remote --file=migrations/0005_stripe.sql"
   },
   "repository": {
     "type": "git",
@@ -28,6 +28,7 @@
     "just-bash": "^2.14.0",
     "kysely": "^0.28.14",
     "kysely-d1": "^0.4.0",
+    "stripe": "^20.4.1",
     "wrangler": "^4.76.0"
   },
   "devDependencies": {

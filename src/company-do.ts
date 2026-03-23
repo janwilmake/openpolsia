@@ -4,6 +4,18 @@ import { runOperator, executeOperatorTask, type OperatorContext } from "./llm-op
 
 export class CompanyDO extends DurableObject<Env> {
   private initialized = false;
+  private sseWriters = new Set<WritableStreamDefaultWriter>();
+
+  private notifySSE(event: string, data?: any) {
+    const payload = data ? JSON.stringify(data) : "{}";
+    const msg = `event: ${event}\ndata: ${payload}\n\n`;
+    const encoded = new TextEncoder().encode(msg);
+    for (const writer of this.sseWriters) {
+      writer.write(encoded).catch(() => {
+        this.sseWriters.delete(writer);
+      });
+    }
+  }
 
   private async ensureInit() {
     if (this.initialized) return;
@@ -104,6 +116,7 @@ export class CompanyDO extends DurableObject<Env> {
       const body = await request.json<{
         method: string;
         sourceInput?: string;
+        companyId: string;
         companyName: string;
         companySlug: string;
         userEmail?: string;
@@ -116,17 +129,17 @@ export class CompanyDO extends DurableObject<Env> {
       if (body.method === "surprise") {
         tasks.push({
           title: "Research the founder and design a fitting business",
-          description: `Research ${body.userName || "the founder"} (${body.userEmail || "unknown email"}) online. Based on their background, interests, and expertise, come up with a unique business concept that fits them. Update the company name if appropriate. This is a surprise — be creative and make it personal.`,
+          description: `Research ${body.userName || "the founder"} (${body.userEmail || "unknown email"}) online. Based on their background, interests, and expertise, come up with a unique business concept that fits them. This is a surprise — be creative and make it personal. Once you have the concept, use the updateCompany tool to set a fitting company name, a short clean slug (lowercase, underscores, max 15 chars), and a one-line description.`,
         });
       } else if (body.method === "website") {
         tasks.push({
           title: `Research ${body.sourceInput} and create a similar business`,
-          description: `Fetch and analyze the website at ${body.sourceInput}. Understand what the business does, its value proposition, branding, and target audience. Create a business concept inspired by it, using the same name (${body.companyName}). Capture key findings for use in subsequent tasks.`,
+          description: `Fetch and analyze the website at ${body.sourceInput}. Understand what the business does, its value proposition, branding, and target audience. Create a business concept inspired by it. Capture key findings for use in subsequent tasks. Use the updateCompany tool to set an appropriate company name, a short clean slug (lowercase, underscores, max 15 chars), and a one-line description.`,
         });
       } else {
         tasks.push({
           title: "Develop the business idea",
-          description: `The founder described their idea as: "${body.sourceInput || ""}". Flesh out this concept into a clear business plan. Define the target audience, core offering, and unique value proposition.`,
+          description: `The founder described their idea as: "${body.sourceInput || ""}". Flesh out this concept into a clear business plan. Define the target audience, core offering, and unique value proposition. Use the updateCompany tool to set a fitting company name, a short clean slug (lowercase, underscores, max 15 chars), and a one-line description.`,
         });
       }
 
@@ -142,12 +155,12 @@ export class CompanyDO extends DurableObject<Env> {
 
       tasks.push({
         title: "Build the company landing page",
-        description: `Create a document titled "website/index.html" containing a complete, styled HTML landing page for the company. It should include: a hero section with the company name and tagline, a description of what the company does, key features/benefits, and a call to action. Make it look professional with inline CSS. This page will be served at ${body.companySlug}.openpolsia.com.`,
+        description: `Create a document titled "website/index.html" containing a complete, styled HTML landing page for the company. It should include: a hero section with the company name and tagline, a description of what the company does, key features/benefits, and a call to action. Make it look professional with inline CSS. This page will be served at the company's subdomain (check the system prompt for the current slug).`,
       });
 
       tasks.push({
         title: "Send a welcome email to the founder",
-        description: `Send a welcome email to ${body.userEmail || "the founder"} introducing the company, summarizing what has been set up (mission, market research, landing page), and outlining next steps. Use a warm, professional tone. Send from ${body.companySlug}@openpolsia.com.`,
+        description: `Send a welcome email to ${body.userEmail || "the founder"} introducing the company, summarizing what has been set up (mission, market research, landing page), and outlining next steps. Use a warm, professional tone. Send from the company's email address (check the system prompt for the current slug).`,
       });
 
       for (const t of tasks) {
@@ -163,6 +176,7 @@ export class CompanyDO extends DurableObject<Env> {
       }
 
       // Persist company metadata so the alarm handler can build OperatorContext
+      await this.ctx.storage.put("companyId", body.companyId);
       await this.ctx.storage.put("companySlug", body.companySlug);
       await this.ctx.storage.put("companyName", body.companyName);
       await this.ctx.storage.put("userEmail", body.userEmail || "");
@@ -181,6 +195,30 @@ export class CompanyDO extends DurableObject<Env> {
       const emails = [...sql.exec("SELECT * FROM email ORDER BY created_at DESC")];
       const logs = [...sql.exec("SELECT * FROM chat_message WHERE type IN ('tool_call', 'tool_result') ORDER BY created_at DESC")];
       return Response.json({ documents, tasks, chat, emails, logs });
+    }
+
+    // GET /sse — Server-Sent Events stream
+    if (url.pathname === "/sse" && request.method === "GET") {
+      const { readable, writable } = new TransformStream();
+      const writer = writable.getWriter();
+      this.sseWriters.add(writer);
+
+      // Send initial ping
+      writer.write(new TextEncoder().encode("event: connected\ndata: {}\n\n")).catch(() => {});
+
+      // Clean up on close
+      request.signal.addEventListener("abort", () => {
+        this.sseWriters.delete(writer);
+        writer.close().catch(() => {});
+      });
+
+      return new Response(readable, {
+        headers: {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache",
+          "Connection": "keep-alive",
+        },
+      });
     }
 
     // GET /documents — list all documents
@@ -261,9 +299,9 @@ export class CompanyDO extends DurableObject<Env> {
       return Response.json({ ok: true });
     }
 
-    // GET /chat — list all chat messages (exclude tool_call/tool_result)
+    // GET /chat — list all chat messages including tool calls/results
     if (url.pathname === "/chat" && request.method === "GET") {
-      const messages = [...sql.exec("SELECT * FROM chat_message WHERE type = 'message' ORDER BY created_at ASC")];
+      const messages = [...sql.exec("SELECT * FROM chat_message WHERE type IN ('message', 'tool_call', 'tool_result') ORDER BY created_at ASC")];
       return Response.json({ messages });
     }
 
@@ -315,8 +353,25 @@ export class CompanyDO extends DurableObject<Env> {
         content: m.content as string,
       }));
 
+      const companyId = (await this.ctx.storage.get("companyId")) as string || "unknown";
+
+      // Fetch billing status for this company's owner
+      const company = await this.env.DB.prepare(
+        `SELECT user_id, subscription_status FROM company WHERE id = ?`
+      ).bind(companyId).first<{ user_id: string; subscription_status: string }>();
+
+      const billingRow = company ? await this.env.DB.prepare(
+        `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
+      ).bind(company.user_id).first<{ task_credits: number; tasks_used: number }>() : null;
+
+      const subscriptionActive = company?.subscription_status === "active";
+      const taskCreditsRemaining = (billingRow?.task_credits ?? 50) - (billingRow?.tasks_used ?? 0);
+
+      const chatStorage = this.ctx.storage;
       const opCtx: OperatorContext = {
         sql,
+        db: this.env.DB,
+        companyId,
         companySlug,
         companyName,
         resendApiKey: this.env.RESEND_API_KEY,
@@ -324,6 +379,13 @@ export class CompanyDO extends DurableObject<Env> {
         parallelApiKey: this.env.PARALLEL_API_KEY,
         userEmail,
         userName,
+        subscriptionActive,
+        taskCreditsRemaining,
+        onMetadataUpdate: async (updates) => {
+          if (updates.slug) await chatStorage.put("companySlug", updates.slug);
+          if (updates.name) await chatStorage.put("companyName", updates.name);
+        },
+        onDataChange: (type) => this.notifySSE("update", { type }),
       };
 
       // Create a streaming placeholder message
@@ -398,14 +460,38 @@ export class CompanyDO extends DurableObject<Env> {
 
     // Mark as in_progress
     sql.exec("UPDATE task SET status = 'in_progress' WHERE id = ?", task.id);
+    this.notifySSE("update", { type: "task" });
 
+    const companyId = (await this.ctx.storage.get("companyId")) as string || "unknown";
     const companySlug = (await this.ctx.storage.get("companySlug")) as string || "unknown";
     const companyName = (await this.ctx.storage.get("companyName")) as string || "Unknown Company";
     const userEmail = (await this.ctx.storage.get("userEmail")) as string || undefined;
     const userName = (await this.ctx.storage.get("userName")) as string || undefined;
 
+    // Fetch billing status
+    const companyRow = await this.env.DB.prepare(
+      `SELECT user_id, subscription_status FROM company WHERE id = ?`
+    ).bind(companyId).first<{ user_id: string; subscription_status: string }>();
+
+    const billingRow = companyRow ? await this.env.DB.prepare(
+      `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
+    ).bind(companyRow.user_id).first<{ task_credits: number; tasks_used: number }>() : null;
+
+    const subscriptionActive = companyRow?.subscription_status === "active";
+    const taskCreditsRemaining = (billingRow?.task_credits ?? 50) - (billingRow?.tasks_used ?? 0);
+
+    // Skip task if no subscription and no free credits remaining
+    if (!subscriptionActive && taskCreditsRemaining <= 0) {
+      sql.exec("UPDATE task SET status = 'todo' WHERE id = ?", task.id);
+      return;
+    }
+
+    const storage = this.ctx.storage;
+    const ownerUserId = companyRow?.user_id;
     const opCtx: OperatorContext = {
       sql,
+      db: this.env.DB,
+      companyId,
       companySlug,
       companyName,
       resendApiKey: this.env.RESEND_API_KEY,
@@ -413,6 +499,18 @@ export class CompanyDO extends DurableObject<Env> {
       parallelApiKey: this.env.PARALLEL_API_KEY,
       userEmail,
       userName,
+      subscriptionActive: subscriptionActive || taskCreditsRemaining > 0,
+      taskCreditsRemaining,
+      onMetadataUpdate: async (updates) => {
+        if (updates.slug) await storage.put("companySlug", updates.slug);
+        if (updates.name) await storage.put("companyName", updates.name);
+      },
+      onDataChange: (type) => this.notifySSE("update", { type }),
+      onTaskCreditUsed: ownerUserId ? async () => {
+        await this.env.DB.prepare(
+          `UPDATE user_billing SET tasks_used = tasks_used + 1 WHERE user_id = ?`
+        ).bind(ownerUserId).run();
+      } : undefined,
     };
 
     try {
@@ -429,8 +527,10 @@ export class CompanyDO extends DurableObject<Env> {
       } else {
         sql.exec("UPDATE task SET status = 'completed' WHERE id = ?", task.id);
       }
+      this.notifySSE("update", { type: "task" });
     } catch (e) {
       sql.exec("UPDATE task SET status = 'failed' WHERE id = ?", task.id);
+      this.notifySSE("update", { type: "task" });
     }
 
     // Schedule next alarm: check for immediate tasks first, then future ones

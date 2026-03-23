@@ -5,6 +5,8 @@ import { z } from "zod/v4";
 
 export interface OperatorContext {
   sql: any;
+  db: D1Database;
+  companyId: string;
   companySlug: string;
   resendApiKey: string;
   companyName: string;
@@ -12,6 +14,16 @@ export interface OperatorContext {
   parallelApiKey?: string;
   userEmail?: string;
   userName?: string;
+  /** Whether the user has an active subscription */
+  subscriptionActive?: boolean;
+  /** Remaining task credits (free + purchased) */
+  taskCreditsRemaining?: number;
+  /** Called when company metadata changes so the DO can update its stored values */
+  onMetadataUpdate?: (updates: { slug?: string; name?: string }) => Promise<void>;
+  /** Called when data changes so the DO can notify SSE clients */
+  onDataChange?: (type: string) => void;
+  /** Called to decrement task credits after task execution */
+  onTaskCreditUsed?: () => Promise<void>;
 }
 
 function buildSystemPrompt(ctx: OperatorContext): string {
@@ -66,7 +78,12 @@ The user's name is ${ctx.userName || "unknown"} and their Google email is ${ctx.
 
 Use the available tools to fulfill the user's requests. Be concise and action-oriented.
 When creating documents, use descriptive titles.
-When sending emails, always use ${ctx.companySlug}@openpolsia.com as the from address.`;
+When sending emails, always use ${ctx.companySlug}@openpolsia.com as the from address.
+You can update the company's name, slug, and description using the updateCompany tool. The slug determines the subdomain (slug.openpolsia.com) and email address (slug@openpolsia.com).${
+    ctx.subscriptionActive
+      ? `\n\nTask credits remaining: ${ctx.taskCreditsRemaining ?? 0}. Each task execution costs 1 credit.`
+      : `\n\nIMPORTANT: This user does not have an active subscription. Do NOT execute any tools or actions. Instead, politely inform them that they need to purchase a subscription ($49/mo per company, includes a 3-day free trial) before you can take any actions. Direct them to click the "Start free trial" button on the dashboard.`
+  }`;
 }
 
 function createTools(ctx: OperatorContext) {
@@ -121,6 +138,7 @@ function createTools(ctx: OperatorContext) {
             content,
             id
           );
+          ctx.onDataChange?.("document");
           return { id, title, updated: true };
         }
         const newId = crypto.randomUUID();
@@ -132,6 +150,7 @@ function createTools(ctx: OperatorContext) {
           content,
           now
         );
+        ctx.onDataChange?.("document");
         return { id: newId, title, created: true };
       }
     }),
@@ -208,6 +227,7 @@ function createTools(ctx: OperatorContext) {
           recurrence || null,
           now
         );
+        ctx.onDataChange?.("task");
         return { id, title, status, recurrence: recurrence || null, created: true };
       }
     }),
@@ -239,6 +259,7 @@ function createTools(ctx: OperatorContext) {
           recurrence !== undefined ? recurrence : existing.recurrence,
           id
         );
+        ctx.onDataChange?.("task");
         return { id, updated: true };
       }
     }),
@@ -285,6 +306,7 @@ function createTools(ctx: OperatorContext) {
         );
 
         const resendData = (await resendRes.json()) as any;
+        ctx.onDataChange?.("email");
         return { sent: true, resend_id: resendData.id, email_id: emailId };
       }
     }),
@@ -334,6 +356,7 @@ function createTools(ctx: OperatorContext) {
           content,
           now
         );
+        ctx.onDataChange?.("chat");
         return { id, sent: true };
       }
     }),
@@ -405,7 +428,107 @@ function createTools(ctx: OperatorContext) {
         }
         return await res.json();
       }
-    })
+    }),
+
+    updateCompany: tool({
+      description:
+        "Update the company's name, slug (URL handle), and/or description. " +
+        "The slug must be unique across all companies (letters, numbers, underscores only, max 15 chars). " +
+        "If the requested slug is already taken, the tool returns all existing slugs containing the requested slug so you can pick an alternative.",
+      inputSchema: z.object({
+        name: z.string().optional().describe("New company name"),
+        slug: z
+          .string()
+          .optional()
+          .describe(
+            "New URL slug (letters, numbers, underscores only, max 15 chars). Must be unique."
+          ),
+        description: z
+          .string()
+          .optional()
+          .describe("New company description")
+      }),
+      execute: async ({ name, slug, description }) => {
+        if (!name && !slug && !description) {
+          return { error: "At least one of name, slug, or description is required" };
+        }
+
+        // Validate and check slug uniqueness
+        if (slug) {
+          const sanitized = slug
+            .toLowerCase()
+            .replace(/[^a-z0-9_]/g, "")
+            .slice(0, 15);
+          if (sanitized !== slug) {
+            return {
+              error: "Invalid slug. Use only lowercase letters, numbers, and underscores (max 15 chars).",
+              suggested: sanitized,
+            };
+          }
+
+          const existing = await ctx.db
+            .prepare(`SELECT slug FROM "company" WHERE slug = ? AND id != ?`)
+            .bind(slug, ctx.companyId)
+            .first();
+
+          if (existing) {
+            // Slug taken — return similar slugs so the AI can choose
+            const { results: similar } = await ctx.db
+              .prepare(
+                `SELECT slug FROM "company" WHERE slug LIKE ? ORDER BY slug`
+              )
+              .bind(`%${slug}%`)
+              .all();
+            return {
+              error: "Slug is already taken",
+              requested: slug,
+              existing_similar_slugs: similar.map((r: any) => r.slug),
+            };
+          }
+        }
+
+        // Apply updates to D1
+        const updates: string[] = [];
+        const values: any[] = [];
+        if (name) {
+          updates.push("name = ?");
+          values.push(name);
+        }
+        if (slug) {
+          updates.push("slug = ?");
+          values.push(slug);
+        }
+        if (description) {
+          updates.push("description = ?");
+          values.push(description);
+        }
+        values.push(ctx.companyId);
+
+        await ctx.db
+          .prepare(`UPDATE "company" SET ${updates.join(", ")} WHERE id = ?`)
+          .bind(...values)
+          .run();
+
+        // Update DO-stored metadata and context
+        if (ctx.onMetadataUpdate) {
+          await ctx.onMetadataUpdate({
+            slug: slug || undefined,
+            name: name || undefined,
+          });
+        }
+        if (slug) ctx.companySlug = slug;
+        if (name) ctx.companyName = name;
+        ctx.onDataChange?.("company");
+
+        return {
+          updated: true,
+          companyId: ctx.companyId,
+          name: name || ctx.companyName,
+          slug: slug || ctx.companySlug,
+          description: description || undefined,
+        };
+      }
+    }),
   };
 }
 
@@ -416,7 +539,7 @@ export function runOperator(
 ): Response {
   const anthropic = createAnthropic({ apiKey: ctx.anthropicApiKey });
   const systemPrompt = buildSystemPrompt(ctx);
-  const tools = createTools(ctx);
+  const tools = ctx.subscriptionActive ? createTools(ctx) : {};
   const sql = ctx.sql;
 
   const result = streamText({
@@ -534,8 +657,13 @@ export async function executeOperatorTask(
 ): Promise<{ success: boolean; text: string }> {
   const anthropic = createAnthropic({ apiKey: ctx.anthropicApiKey });
   const systemPrompt = buildSystemPrompt(ctx);
-  const tools = createTools(ctx);
+  const tools = ctx.subscriptionActive ? createTools(ctx) : {};
   const sql = ctx.sql;
+
+  // Decrement task credits when executing a task
+  if (ctx.subscriptionActive && ctx.onTaskCreditUsed) {
+    await ctx.onTaskCreditUsed();
+  }
 
   const result = await generateText({
     model: anthropic("claude-sonnet-4-6"),

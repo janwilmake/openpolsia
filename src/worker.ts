@@ -4,6 +4,13 @@ import { dashboardHTML } from "./pages/dashboard";
 import { documentsPageHTML } from "./pages/documents";
 import { tasksPageHTML } from "./pages/tasks";
 import { emailsPageHTML } from "./pages/emails";
+import {
+  createOrGetCustomer,
+  createCheckoutSession,
+  createTaskPurchaseSession,
+  createPortalSession,
+  handleWebhook,
+} from "./stripe";
 import indexPageHTML from "../public/index.html";
 import newPageHTML from "../public/new.html";
 import aboutPageHTML from "../public/about.html";
@@ -86,6 +93,65 @@ export default {
       return auth.handler(request);
     }
 
+    // --- Stripe webhook (no auth, signature verified) ---
+    if (url.pathname === "/api/webhooks/stripe" && request.method === "POST") {
+      return handleWebhook(env, request);
+    }
+
+    // --- Billing API ---
+    if (url.pathname.startsWith("/api/billing")) {
+      const session = await auth.api.getSession({ headers: request.headers });
+      if (!session)
+        return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+      const returnUrl = url.origin + "/dashboard";
+
+      if (url.pathname === "/api/billing/checkout" && request.method === "POST") {
+        const body = await request.json<{ quantity?: number }>();
+        const quantity = body.quantity || 1;
+        const customerId = await createOrGetCustomer(env, session.user.id, session.user.email);
+        const checkoutUrl = await createCheckoutSession(env, customerId, quantity, returnUrl);
+        return Response.json({ url: checkoutUrl });
+      }
+
+      if (url.pathname === "/api/billing/buy-tasks" && request.method === "POST") {
+        const body = await request.json<{ quantity?: number }>();
+        const quantity = body.quantity || 10;
+        const customerId = await createOrGetCustomer(env, session.user.id, session.user.email);
+        const checkoutUrl = await createTaskPurchaseSession(env, customerId, quantity, returnUrl);
+        return Response.json({ url: checkoutUrl });
+      }
+
+      if (url.pathname === "/api/billing/portal" && request.method === "POST") {
+        const customerId = await createOrGetCustomer(env, session.user.id, session.user.email);
+        const portalUrl = await createPortalSession(env, customerId, returnUrl);
+        return Response.json({ url: portalUrl });
+      }
+
+      if (url.pathname === "/api/billing/status" && request.method === "GET") {
+        const billing = await env.DB.prepare(
+          `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
+        )
+          .bind(session.user.id)
+          .first<{ task_credits: number; tasks_used: number }>();
+
+        const { results: subs } = await env.DB.prepare(
+          `SELECT subscription_status FROM company WHERE user_id = ? AND subscription_status = 'active'`
+        )
+          .bind(session.user.id)
+          .all<{ subscription_status: string }>();
+
+        return Response.json({
+          hasActiveSubscription: subs.length > 0,
+          subscribedCompanies: subs.length,
+          taskCredits: billing?.task_credits ?? 50,
+          tasksUsed: billing?.tasks_used ?? 0,
+        });
+      }
+
+      return new Response("Not found", { status: 404 });
+    }
+
     // --- API: Companies ---
     if (url.pathname === "/api/companies") {
       const session = await auth.api.getSession({ headers: request.headers });
@@ -149,6 +215,7 @@ export default {
             body: JSON.stringify({
               method: body.method,
               sourceInput: body.sourceInput || undefined,
+              companyId: id,
               companyName: name,
               companySlug: finalSlug,
               userEmail: session.user.email || undefined,
@@ -366,9 +433,26 @@ export default {
         companyData = await res.json();
       }
 
+      // Fetch billing status
+      const billing = await env.DB.prepare(
+        `SELECT task_credits, tasks_used FROM user_billing WHERE user_id = ?`
+      )
+        .bind(session.user.id)
+        .first<{ task_credits: number; tasks_used: number }>();
+
+      const hasActiveSubscription = companies.some(
+        (c) => c.subscription_status === "active"
+      );
+
+      const billingData = {
+        hasActiveSubscription,
+        taskCredits: billing?.task_credits ?? 50,
+        tasksUsed: billing?.tasks_used ?? 0,
+      };
+
       const name = session.user.name || session.user.email;
       return new Response(
-        dashboardHTML(name, companies, selectedCompany, companyData),
+        dashboardHTML(name, companies, selectedCompany, companyData, url.host, billingData),
         {
           headers: { "Content-Type": "text/html;charset=utf-8" }
         }

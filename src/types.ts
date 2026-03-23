@@ -8,6 +8,10 @@ export interface Env {
   RESEND_API_KEY: string;
   ANTHROPIC_API_KEY: string;
   PARALLEL_API_KEY?: string;
+  STRIPE_SECRET_KEY: string;
+  STRIPE_WEBHOOK_SECRET: string;
+  STRIPE_PRICE_COMPANY: string;
+  STRIPE_PRICE_TASK: string;
 }
 
 export interface Company {
@@ -19,6 +23,8 @@ export interface Company {
   method: string;
   source_input: string | null;
   created_at: string;
+  stripe_subscription_id: string | null;
+  subscription_status: string;
 }
 
 export function escapeHtml(str: string) {

@@ -37,7 +37,19 @@ What is an POC-level that is "good enough"?
   - ✅ `*.openpolsia.com` should route to the worker
   - ✅ if a subdomain is the incoming domain, look up the subdomain to get the durable object, then serve `website/*` documents with path if available, otherwise serve 404. for `/` we should serve `website/index.html`. if `website/index.html` is not available, redirect to `openpolsia.com`
 - ✅ **task executor queue**
+- ✅ improve ui, making it more similar to polsia
+- ✅ slug should adapt to the name which should be chosen in the first task
+- ✅ make the dashboard auto-update using a SSE endpoint
 
 TODO
 
-- **stripe integration** to charge for companies and buying tasks
+- **stripe integration**
+  - charge for companies ($50/m/company) and buying tasks ($1/task after 50 free)
+  - only the initial creation is done for free, but then, tools are disabled until you purchase at least 1 company. the system prompt instructs the model to say that the user neds to purchase the subscription first.
+  - there is a card on the left column 'business' that shows 'Hire Your AI Employee, $1.63/day · Works while you sleep, Start free trial, 3-day trial · $49/mo' that opens the payment modal when clicke
+  - the payment modal allows selecing amount of companies to purchase
+  - after purchasing there is a way to edit the subscription and also purchase more tasks at $1/task. The tasks are a one-time purchase, while the companies are a subscription.
+
+```
+For local testing: stripe listen --forward-to localhost:8787/api/webhooks/stripe
+```
