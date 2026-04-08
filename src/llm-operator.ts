@@ -34,7 +34,7 @@ function buildSystemPrompt(ctx: OperatorContext): string {
   ];
   const tasks = [
     ...sql.exec(
-      "SELECT id, title, status, assigned_to, description, recurrence, next_run_at FROM task ORDER BY created_at DESC"
+      "SELECT id, title, status, description, recurrence, next_run_at FROM task ORDER BY created_at DESC"
     )
   ];
   const emails = [
@@ -49,7 +49,7 @@ function buildSystemPrompt(ctx: OperatorContext): string {
     tasks
       .map(
         (t: any) =>
-          `  [${t.status}] ${t.title} (${t.id}) — ${t.assigned_to || "unassigned"}${t.recurrence ? ` (${t.recurrence})` : ""}`
+          `  [${t.status}] ${t.title} (${t.id})${t.recurrence ? ` (${t.recurrence})` : ""}`
       )
       .join("\n") || "  (empty)";
   const emailList =
@@ -204,58 +204,48 @@ function createTools(ctx: OperatorContext) {
       inputSchema: z.object({
         title: z.string().describe("Task title"),
         description: z.string().default("").describe("Task description"),
-        status: z.string().default("todo").describe("Task status"),
-        assigned_to: z
-          .string()
-          .optional()
-          .describe("Who the task is assigned to"),
         recurrence: z
           .enum(["hourly", "daily", "weekly"])
           .optional()
           .describe("Recurrence interval. Omit for one-off tasks.")
       }),
-      execute: async ({ title, description, status, assigned_to, recurrence }) => {
+      execute: async ({ title, description, recurrence }) => {
         const id = crypto.randomUUID();
         const now = new Date().toISOString();
         sql.exec(
-          "INSERT INTO task (id, title, description, status, assigned_to, recurrence, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+          "INSERT INTO task (id, title, description, status, recurrence, created_at) VALUES (?, ?, ?, ?, ?, ?)",
           id,
           title,
           description,
-          status,
-          assigned_to || null,
+          "todo",
           recurrence || null,
           now
         );
         ctx.onDataChange?.("task");
-        return { id, title, status, recurrence: recurrence || null, created: true };
+        return { id, title, status: "todo", recurrence: recurrence || null, created: true };
       }
     }),
 
     editTask: tool({
       description:
-        "Update an existing task's status, title, description, assignment, or recurrence",
+        "Update an existing task's title, description, or recurrence",
       inputSchema: z.object({
         id: z.string().describe("Task ID to update"),
         title: z.string().optional().describe("New title"),
         description: z.string().optional().describe("New description"),
-        status: z.string().optional().describe("New status"),
-        assigned_to: z.string().optional().describe("New assignee"),
         recurrence: z
           .enum(["hourly", "daily", "weekly"])
           .nullable()
           .optional()
           .describe("Set recurrence interval, or null to make one-off")
       }),
-      execute: async ({ id, title, description, status, assigned_to, recurrence }) => {
+      execute: async ({ id, title, description, recurrence }) => {
         const existing = sql.exec("SELECT * FROM task WHERE id = ?", id).one() as any;
         if (!existing) return { error: "Task not found" };
         sql.exec(
-          "UPDATE task SET title = ?, description = ?, status = ?, assigned_to = ?, recurrence = ? WHERE id = ?",
+          "UPDATE task SET title = ?, description = ?, recurrence = ? WHERE id = ?",
           title ?? existing.title,
           description ?? existing.description,
-          status ?? existing.status,
-          assigned_to ?? existing.assigned_to,
           recurrence !== undefined ? recurrence : existing.recurrence,
           id
         );

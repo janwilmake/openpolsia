@@ -1126,10 +1126,17 @@ export function dashboardHTML(
             + '<div class="section-item"><a href="' + PROTOCOL + '://' + COMPANY_SLUG + '.' + BASE_DOMAIN + '" target="_blank" class="item-link">' + COMPANY_SLUG + '.' + BASE_DOMAIN + '</a></div>'
             + '</div>';
 
+          // Preserve the billing card from the server-rendered HTML
+          var billingCardHtml = '';
+          var existingBillingCard = el.querySelector('.billing-card');
+          if (existingBillingCard) {
+            billingCardHtml = existingBillingCard.outerHTML;
+          }
+
           el.innerHTML = '<div class="columns">'
             + '<div class="col">' + tasksHtml + '</div>'
             + '<div class="col">' + docsHtml + '</div>'
-            + '<div class="col">' + linksHtml + emailsHtml + '</div>'
+            + '<div class="col">' + billingCardHtml + linksHtml + emailsHtml + '</div>'
             + '</div>';
         });
     }

@@ -53,3 +53,13 @@ For local testing: stripe listen --forward-to localhost:8787/api/webhooks/stripe
 ```
 
 TODO
+
+- **explore sandbox** have a coding agent make a real product on github + cloudflare + stripe + any other cli. determine how to login the user in a sandbox.
+- cheaper kimi model?
+- allow tasks to use MCPs?
+- improve prompting of initial tasks so it's more like what we want
+- queue 3 tasks without doing them on the free tier
+- fix just-bash to be able to write to documents
+- more visibility on the task queue logic
+- **ads** - explore apis for ads
+- **browser** explore a browser tool

@@ -165,12 +165,11 @@ export class CompanyDO extends DurableObject<Env> {
 
       for (const t of tasks) {
         sql.exec(
-          "INSERT INTO task (id, title, description, status, assigned_to, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+          "INSERT INTO task (id, title, description, status, created_at) VALUES (?, ?, ?, ?, ?)",
           crypto.randomUUID(),
           t.title,
           t.description,
           "todo",
-          "operator",
           now
         );
       }

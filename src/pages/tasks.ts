@@ -392,7 +392,6 @@ export function tasksPageHTML(company: Company) {
           + '<div class="task-title">' + esc(t.title) + '</div>'
           + '<div class="task-meta">'
           + '<span class="badge badge-' + ds + '">' + esc(ds) + '</span>'
-          + (t.assigned_to ? '<span>' + esc(t.assigned_to) + '</span>' : '')
           + '</div>'
           + '</div>';
       }).join('');
@@ -423,7 +422,6 @@ export function tasksPageHTML(company: Company) {
       document.getElementById('task-title').textContent = selectedTask.title;
       document.getElementById('task-meta').innerHTML =
         '<span class="badge badge-' + displayStatus(selectedTask) + '">' + esc(displayStatus(selectedTask)) + '</span>'
-        + (selectedTask.assigned_to ? '<span>Assigned to: <strong>' + esc(selectedTask.assigned_to) + '</strong></span>' : '')
         + (selectedTask.recurrence ? '<span>Recurs: <strong>' + esc(selectedTask.recurrence) + '</strong></span>' : '')
         + '<span>' + new Date(selectedTask.created_at).toLocaleString() + '</span>'
         + (selectedTask.status === 'failed' ? '<button class="retry-btn" onclick="retryTask(\\'' + selectedTask.id + '\\')">Retry</button>' : '');
